@@ -1,0 +1,43 @@
+services:
+  rreading-glasses-db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${RREADING_GLASSES_POSTGRES_DB:-rreading-glasses}
+      POSTGRES_USER: ${RREADING_GLASSES_POSTGRES_USER:-rreading-glasses}
+      POSTGRES_PASSWORD: ${RREADING_GLASSES_POSTGRES_PASSWORD:-change-me}
+    volumes:
+      - rreading_glasses_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  rreading-glasses:
+    image: ${RREADING_GLASSES_IMAGE:-blampe/rreading-glasses:latest}
+    entrypoint: ["/main", "serve"]
+    command: ["--verbose", "--upstream=www.goodreads.com"]
+    environment:
+      POSTGRES_HOST: rreading-glasses-db
+      POSTGRES_DATABASE: ${RREADING_GLASSES_POSTGRES_DB:-rreading-glasses}
+      POSTGRES_USER: ${RREADING_GLASSES_POSTGRES_USER:-rreading-glasses}
+      POSTGRES_PASSWORD: ${RREADING_GLASSES_POSTGRES_PASSWORD:-change-me}
+      HARDCOVER_AUTH: ${RREADING_GLASSES_HARDCOVER_AUTH:-}
+    restart: unless-stopped
+
+  backend:
+    image: todds-library-backend
+    build: null
+    environment:
+      SECRET_KEY: ${SECRET_KEY:-e2e_backend_secret}
+      RREADING_GLASSES_URL: http://rreading-glasses:8788
+    volumes:
+      - ${E2E_BOOKS_DIR:-/mnt/2tb_jellyfin/Books}:/books
+      - coverdata:/data/covers
+
+  frontend:
+    image: todds-library-frontend
+    build: null
+    environment:
+      NEXTAUTH_URL: ${NEXTAUTH_URL:-http://localhost:3331}
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-e2e_nextauth_secret}
+
+volumes:
+  coverdata:
+  rreading_glasses_data:

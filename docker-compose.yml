@@ -1,0 +1,148 @@
+name: todds-library
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-todds_library}
+      POSTGRES_USER: ${POSTGRES_USER:-todds}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-todds_secret}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - internal
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-todds} -d ${POSTGRES_DB:-todds_library}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redisdata:/data
+    networks:
+      - internal
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  meilisearch:
+    image: getmeili/meilisearch:v1.7
+    environment:
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:-todds_meili_master_key}
+      MEILI_ENV: ${MEILI_ENV:-production}
+    volumes:
+      - meilidata:/meili_data
+    networks:
+      - internal
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7700/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./apps/backend
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-todds}:${POSTGRES_PASSWORD:-todds_secret}@postgres:5432/${POSTGRES_DB:-todds_library}
+      REDIS_URL: redis://redis:6379/0
+      MEILI_URL: http://meilisearch:7700
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:-todds_meili_master_key}
+      AUTHENTIK_ISSUER: ${AUTHENTIK_ISSUER:-}
+      AUTHENTIK_CLIENT_ID: ${AUTHENTIK_CLIENT_ID:-}
+      AUTHENTIK_CLIENT_SECRET: ${AUTHENTIK_CLIENT_SECRET:-}
+      RREADING_GLASSES_URL: http://rreading-glasses:8788
+      BOOKS_DIR: /books
+      COVERS_DIR: /data/covers
+      SECRET_KEY: ${SECRET_KEY:-change_me_in_production}
+      PORT: 8000
+      UVICORN_WORKERS: ${UVICORN_WORKERS:-1}
+    volumes:
+      - /mnt/2tb_jellyfin/Books:/books
+      - coverdata:/data/covers
+    ports:
+      - "${BACKEND_PORT:-8830}:8000"
+    networks:
+      - internal
+      - frontend
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      meilisearch:
+        condition: service_healthy
+    restart: unless-stopped
+
+  rreading-glasses-db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${RREADING_GLASSES_POSTGRES_DB:-rreading-glasses}
+      POSTGRES_USER: ${RREADING_GLASSES_POSTGRES_USER:-rreading-glasses}
+      POSTGRES_PASSWORD: ${RREADING_GLASSES_POSTGRES_PASSWORD:-change-me}
+    volumes:
+      - rreading_glasses_data:/var/lib/postgresql/data
+    networks:
+      - internal
+    restart: unless-stopped
+
+  rreading-glasses:
+    image: ${RREADING_GLASSES_IMAGE:-blampe/rreading-glasses:latest}
+    entrypoint: ["/main", "serve"]
+    command: ["--verbose", "--upstream=www.goodreads.com"]
+    environment:
+      POSTGRES_HOST: rreading-glasses-db
+      POSTGRES_DATABASE: ${RREADING_GLASSES_POSTGRES_DB:-rreading-glasses}
+      POSTGRES_USER: ${RREADING_GLASSES_POSTGRES_USER:-rreading-glasses}
+      POSTGRES_PASSWORD: ${RREADING_GLASSES_POSTGRES_PASSWORD:-change-me}
+      HARDCOVER_AUTH: ${RREADING_GLASSES_HARDCOVER_AUTH:-}
+    ports:
+      - "${RREADING_GLASSES_PORT:-8788}:8788"
+    networks:
+      - internal
+    depends_on:
+      - rreading-glasses-db
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: apps/frontend/Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-/backend-api}
+    ports:
+      - "${FRONTEND_PORT:-3330}:3000"
+    environment:
+      AUTHENTIK_ISSUER: ${AUTHENTIK_ISSUER:-}
+      AUTHENTIK_CLIENT_ID: ${AUTHENTIK_CLIENT_ID:-}
+      AUTHENTIK_CLIENT_SECRET: ${AUTHENTIK_CLIENT_SECRET:-}
+      NEXTAUTH_URL: ${NEXTAUTH_URL:-http://localhost:3330}
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-change_me_in_production}
+      API_INTERNAL_URL: http://backend:8000/api
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-/backend-api}
+    networks:
+      - frontend
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+networks:
+  internal:
+    internal: true
+  frontend:
+
+volumes:
+  pgdata:
+  redisdata:
+  meilidata:
+  coverdata:
+  rreading_glasses_data:
+  books_data:

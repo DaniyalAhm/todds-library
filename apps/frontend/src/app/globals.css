@@ -1,0 +1,200 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 222 47% 11%;
+    --foreground: 210 40% 96%;
+    --card: 222 47% 14%;
+    --card-foreground: 210 40% 96%;
+    --popover: 222 47% 14%;
+    --popover-foreground: 210 40% 96%;
+    --primary: 47 95% 55%;
+    --primary-foreground: 222 47% 11%;
+    --secondary: 217 33% 20%;
+    --secondary-foreground: 210 40% 96%;
+    --muted: 217 33% 18%;
+    --muted-foreground: 215 20% 70%;
+    --accent: 47 95% 55%;
+    --accent-foreground: 222 47% 11%;
+    --destructive: 0 63% 50%;
+    --destructive-foreground: 210 40% 96%;
+    --border: 217 33% 20%;
+    --input: 217 33% 20%;
+    --ring: 47 95% 55%;
+    --radius: 0.5rem;
+    --sidebar: 222 47% 9%;
+    --sidebar-foreground: 210 40% 96%;
+    --sidebar-muted: 217 33% 16%;
+    --sidebar-accent: 47 95% 55%;
+  }
+
+  .light {
+    --background: 0 0% 100%;
+    --foreground: 222 47% 11%;
+    --card: 0 0% 98%;
+    --card-foreground: 222 47% 11%;
+    --popover: 0 0% 98%;
+    --popover-foreground: 222 47% 11%;
+    --primary: 222 47% 11%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 210 40% 92%;
+    --secondary-foreground: 222 47% 11%;
+    --muted: 210 40% 92%;
+    --muted-foreground: 215 16% 47%;
+    --accent: 47 95% 55%;
+    --accent-foreground: 222 47% 11%;
+    --destructive: 0 63% 50%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 214 32% 86%;
+    --input: 214 32% 86%;
+    --ring: 222 47% 11%;
+    --sidebar: 0 0% 96%;
+    --sidebar-foreground: 222 47% 11%;
+    --sidebar-muted: 0 0% 90%;
+    --sidebar-accent: 222 47% 11%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html {
+    @apply bg-background text-foreground;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings: "rlig" 1, "calt" 1;
+  }
+
+  html,
+  body {
+    min-width: 320px;
+    overflow-x: hidden;
+  }
+}
+
+@layer components {
+  .rhap_container {
+    @apply min-w-0 rounded-lg border border-border bg-card text-foreground shadow-none;
+  }
+
+  .rhap_main,
+  .rhap_stacked .rhap_controls-section {
+    @apply min-w-0;
+  }
+
+  .rhap_controls-section {
+    @apply flex-wrap gap-y-2;
+  }
+
+  .rhap_progress-section {
+    @apply min-w-0;
+  }
+
+  .rhap_time {
+    @apply text-xs text-muted-foreground;
+  }
+
+  .rhap_progress-filled {
+    background-color: hsl(var(--primary)) !important;
+  }
+
+  .rhap_progress-indicator {
+    background-color: hsl(var(--primary)) !important;
+    border: 2px solid hsl(var(--background)) !important;
+    box-shadow: 0 0 4px hsl(var(--primary) / 0.4) !important;
+  }
+
+  .rhap_progress-bar {
+    @apply bg-secondary;
+  }
+
+  .rhap_volume-filled {
+    background-color: hsl(var(--primary)) !important;
+  }
+
+  .rhap_volume-indicator {
+    background-color: hsl(var(--primary)) !important;
+    border: 2px solid hsl(var(--background)) !important;
+  }
+
+  .rhap_volume-bar {
+    @apply bg-secondary;
+  }
+
+  .rhap_button-clear {
+    @apply text-muted-foreground transition-colors;
+  }
+
+  .rhap_button-clear:hover {
+    @apply text-foreground;
+  }
+
+  .rhap_button-clear:focus-visible {
+    @apply outline-none ring-2 ring-ring ring-offset-2 ring-offset-background;
+  }
+
+  .rhap_main-controls-button {
+    @apply text-foreground;
+  }
+
+  .rhap_main-controls-button svg {
+    @apply h-5 w-5;
+  }
+
+  .rhap_volume-button {
+    @apply text-muted-foreground;
+  }
+
+  .rhap_volume-button:hover {
+    @apply text-foreground;
+  }
+
+  .rhap_repeat-button {
+    @apply text-muted-foreground;
+  }
+
+  .rhap_repeat-button:hover {
+    @apply text-foreground;
+  }
+
+  @media (max-width: 640px) {
+    .rhap_container {
+      padding: 0.75rem;
+    }
+
+    .rhap_controls-section {
+      justify-content: center;
+    }
+
+    .rhap_additional-controls,
+    .rhap_volume-controls {
+      flex: 0 1 auto;
+    }
+  }
+}
+
+@layer utilities {
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--muted)) transparent;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background-color: hsl(var(--muted));
+    border-radius: 3px;
+  }
+}

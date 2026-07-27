@@ -15,6 +15,8 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import {
   ChevronLeft,
   ChevronRight,
+  Maximize,
+  Minimize,
   Sun,
   Moon,
   MoonStar,
@@ -50,6 +52,7 @@ export function EpubReader({ bookId }: EpubReaderProps) {
   const [toc, setToc] = useState<any[]>([]);
   const [currentLocation, setCurrentLocation] = useState('');
   const [loadError, setLoadError] = useState('');
+  const [isFullscreen, setIsFullscreen] = useState(false);
 
   useEffect(() => {
     progressLocationRef.current = progress?.location;
@@ -161,6 +164,36 @@ export function EpubReader({ bookId }: EpubReaderProps) {
     }
   }, [fontSize]);
 
+  useEffect(() => {
+    const onFullscreenChange = () => setIsFullscreen(!!document.fullscreenElement);
+    document.addEventListener('fullscreenchange', onFullscreenChange);
+    return () => document.removeEventListener('fullscreenchange', onFullscreenChange);
+  }, []);
+
+  const touchStartRef = useRef<number | null>(null);
+
+  const handleTouchStart = (e: React.TouchEvent) => {
+    touchStartRef.current = e.touches[0].clientX;
+  };
+
+  const handleTouchEnd = (e: React.TouchEvent) => {
+    if (touchStartRef.current === null) return;
+    const dx = e.changedTouches[0].clientX - touchStartRef.current;
+    touchStartRef.current = null;
+    if (Math.abs(dx) > 50) {
+      if (dx > 0) renditionRef.current?.prev();
+      else renditionRef.current?.next();
+    }
+  };
+
+  const toggleFullscreen = () => {
+    if (document.fullscreenElement) {
+      document.exitFullscreen();
+    } else {
+      viewerRef.current?.requestFullscreen();
+    }
+  };
+
   const handleNavigate = (href: string) => {
     if (renditionRef.current) {
       renditionRef.current.display(href);
@@ -233,6 +266,9 @@ export function EpubReader({ bookId }: EpubReaderProps) {
           </Button>
           <Button className="hidden sm:inline-flex" variant="ghost" size="icon" onClick={() => setFontSize(Math.min(200, fontSize + 10))}>
             <Type className="h-5 w-5" />
+          </Button>
+          <Button variant="ghost" size="icon" onClick={toggleFullscreen}>
+            {isFullscreen ? <Minimize className="h-4 w-4" /> : <Maximize className="h-4 w-4" />}
           </Button>
           <div className="ml-1 flex rounded-md border border-border sm:ml-2">
             <Button
@@ -322,6 +358,8 @@ export function EpubReader({ bookId }: EpubReaderProps) {
 
         <div
           ref={viewerRef}
+          onTouchStart={handleTouchStart}
+          onTouchEnd={handleTouchEnd}
           className={cn(
             'h-full min-h-0 min-w-0 flex-1 overflow-hidden',
             theme === 'dark' ? 'bg-[#1a1a2e]' : theme === 'oled-dark' ? 'bg-black' : theme === 'sepia' ? 'bg-[#f4ecd8]' : 'bg-[#f5f0e8]'

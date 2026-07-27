@@ -53,6 +53,7 @@ export function EpubReader({ bookId }: EpubReaderProps) {
   const [currentLocation, setCurrentLocation] = useState('');
   const [loadError, setLoadError] = useState('');
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [showToolbar, setShowToolbar] = useState(true);
 
   useEffect(() => {
     progressLocationRef.current = progress?.location;
@@ -165,7 +166,10 @@ export function EpubReader({ bookId }: EpubReaderProps) {
   }, [fontSize]);
 
   useEffect(() => {
-    const onFullscreenChange = () => setIsFullscreen(!!document.fullscreenElement);
+    const onFullscreenChange = () => {
+      setIsFullscreen(!!document.fullscreenElement);
+      setShowToolbar(true);
+    };
     document.addEventListener('fullscreenchange', onFullscreenChange);
     return () => document.removeEventListener('fullscreenchange', onFullscreenChange);
   }, []);
@@ -182,6 +186,16 @@ export function EpubReader({ bookId }: EpubReaderProps) {
   const handleViewerClick = (e: React.MouseEvent) => {
     const rect = e.currentTarget.getBoundingClientRect();
     const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+
+    if (isFullscreen) {
+      if (y < 50) {
+        setShowToolbar((v) => !v);
+        return;
+      }
+      if (showToolbar) setShowToolbar(false);
+    }
+
     if (x < rect.width / 3) renditionRef.current?.prev();
     else if (x > (rect.width * 2) / 3) renditionRef.current?.next();
   };
@@ -241,7 +255,10 @@ export function EpubReader({ bookId }: EpubReaderProps) {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-card px-2 py-2 sm:px-4">
+      <div className={cn(
+        'flex flex-wrap items-center justify-between gap-2 border-b border-border bg-card px-2 py-2 sm:px-4 transition-transform duration-200',
+        isFullscreen && !showToolbar && '-translate-y-full'
+      )}>
         <div className="flex shrink-0 items-center gap-2">
           <Button
             variant="ghost"

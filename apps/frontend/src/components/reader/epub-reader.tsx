@@ -17,6 +17,7 @@ import {
   ChevronRight,
   Sun,
   Moon,
+  MoonStar,
   Search,
   Bookmark,
   List,
@@ -42,7 +43,7 @@ export function EpubReader({ bookId }: EpubReaderProps) {
   const progressLocationRef = useRef<string | null | undefined>(null);
   const updateProgressRef = useRef(updateProgress);
 
-  const [theme, setTheme] = useState<'light' | 'dark' | 'sepia'>('dark');
+  const [theme, setTheme] = useState<'light' | 'dark' | 'sepia' | 'oled-dark'>('dark');
   const [fontSize, setFontSize] = useState(100);
   const [showSidebar, setShowSidebar] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
@@ -93,6 +94,7 @@ export function EpubReader({ bookId }: EpubReaderProps) {
         light: { body: { background: '#f5f0e8', color: '#3a3a3a' } },
         dark: { body: { background: '#1a1a2e', color: '#e0e0e0' } },
         sepia: { body: { background: '#f4ecd8', color: '#5b4636' } },
+        'oled-dark': { body: { background: '#000000', color: '#b0b0b0' } },
       };
 
       renditionRef.current.themes.register(themeStyles);
@@ -257,6 +259,14 @@ export function EpubReader({ bookId }: EpubReaderProps) {
             >
               <Sun className="h-3 w-3 text-amber-500" />
             </Button>
+            <Button
+              variant={theme === 'oled-dark' ? 'secondary' : 'ghost'}
+              size="sm"
+              className="rounded-l-none px-2"
+              onClick={() => setTheme('oled-dark')}
+            >
+              <MoonStar className="h-3 w-3" />
+            </Button>
           </div>
         </div>
       </div>
@@ -314,7 +324,7 @@ export function EpubReader({ bookId }: EpubReaderProps) {
           ref={viewerRef}
           className={cn(
             'h-full min-h-0 min-w-0 flex-1 overflow-hidden',
-            theme === 'dark' ? 'bg-[#1a1a2e]' : theme === 'sepia' ? 'bg-[#f4ecd8]' : 'bg-[#f5f0e8]'
+            theme === 'dark' ? 'bg-[#1a1a2e]' : theme === 'oled-dark' ? 'bg-black' : theme === 'sepia' ? 'bg-[#f4ecd8]' : 'bg-[#f5f0e8]'
           )}
         />
       </div>

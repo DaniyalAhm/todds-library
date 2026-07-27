@@ -170,6 +170,22 @@ export function EpubReader({ bookId }: EpubReaderProps) {
     return () => document.removeEventListener('fullscreenchange', onFullscreenChange);
   }, []);
 
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'ArrowLeft') renditionRef.current?.prev();
+      else if (e.key === 'ArrowRight') renditionRef.current?.next();
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, []);
+
+  const handleViewerClick = (e: React.MouseEvent) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    if (x < rect.width / 3) renditionRef.current?.prev();
+    else if (x > (rect.width * 2) / 3) renditionRef.current?.next();
+  };
+
   const touchStartRef = useRef<number | null>(null);
 
   const handleTouchStart = (e: React.TouchEvent) => {
@@ -358,6 +374,7 @@ export function EpubReader({ bookId }: EpubReaderProps) {
 
         <div
           ref={viewerRef}
+          onClick={handleViewerClick}
           onTouchStart={handleTouchStart}
           onTouchEnd={handleTouchEnd}
           className={cn(

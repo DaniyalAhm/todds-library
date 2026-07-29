@@ -79,26 +79,45 @@ def _get_model_pipeline():
         model=model_id,
     )
     try:
-        _MODEL_PIPELINE.model.save_pretrained(str(model_dir))
-        _MODEL_PIPELINE.tokenizer.save_pretrained(str(model_dir))
+        _MODEL_PIPELINE.save_pretrained(str(model_dir))
     except Exception:
         pass
     return _MODEL_PIPELINE
 
 
+def _ensure_wav(audio_path: str) -> str:
+    import subprocess, tempfile, os
+    ext = os.path.splitext(audio_path)[1].lower()
+    if ext in (".wav", ".flac"):
+        return audio_path
+    wav = tempfile.mktemp(suffix=".wav")
+    subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+         "-i", audio_path, "-ar", "16000", "-ac", "1", wav],
+        check=True, capture_output=True,
+    )
+    return wav
+
+
 def transcribe(audio_path: str, language: str | None = None) -> TranscriptionResult:
     pipe = _get_model_pipeline()
+    wav_path = _ensure_wav(audio_path)
     generate_kwargs = {}
     if language:
         generate_kwargs["language"] = language
 
-    result = pipe(
-        audio_path,
+    pipe_kwargs = dict(
         return_timestamps=True,
         chunk_length_s=30,
         stride_length_s=5,
-        generate_kwargs=generate_kwargs or None,
     )
+    if generate_kwargs:
+        pipe_kwargs["generate_kwargs"] = generate_kwargs
+    try:
+        result = pipe(wav_path, **pipe_kwargs)
+    finally:
+        if wav_path != audio_path and os.path.exists(wav_path):
+            os.unlink(wav_path)
 
     segments = []
     if "chunks" in result:

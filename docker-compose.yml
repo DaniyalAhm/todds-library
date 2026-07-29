@@ -65,9 +65,12 @@ services:
       SECRET_KEY: ${SECRET_KEY:-change_me_in_production}
       PORT: 8000
       UVICORN_WORKERS: ${UVICORN_WORKERS:-1}
+      ASR_MODEL_ID: openai/whisper-small
+      ASR_MODELS_DIR: /data/asr_models
     volumes:
       - /mnt/2tb_jellyfin/Books:/books
       - coverdata:/data/covers
+      - asrdata:/data/asr_models
     ports:
       - "${BACKEND_PORT:-8830}:8000"
     networks:
@@ -146,3 +149,4 @@ volumes:
   coverdata:
   rreading_glasses_data:
   books_data:
+  asrdata:

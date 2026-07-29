@@ -1,7 +1,7 @@
 FROM python:3.12-slim-bookworm AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc libpq-dev \
+    gcc libpq-dev libsndfile1 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -13,7 +13,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
 FROM python:3.12-slim-bookworm
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libpq5 ffmpeg curl \
+    libpq5 ffmpeg curl libsndfile1 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

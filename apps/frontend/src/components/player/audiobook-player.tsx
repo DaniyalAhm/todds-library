@@ -8,6 +8,8 @@ import { ChapterList } from './chapter-list';
 import { SleepTimer } from './sleep-timer';
 import { Slider } from '@/components/ui/slider';
 import { Headphones } from 'lucide-react';
+import { SubtitleOverlay, loadSubtitleFile } from '@/components/reader/subtitle-overlay';
+import type { SubtitleCue } from '@/components/reader/subtitle-overlay';
 
 interface AudiobookPlayerProps {
   bookId: string;
@@ -23,6 +25,7 @@ export function AudiobookPlayer({ bookId }: AudiobookPlayerProps) {
   const [loadError, setLoadError] = useState('');
   const [triedHls, setTriedHls] = useState(false);
   const [trackIndex, setTrackIndex] = useState(0);
+  const [cues, setCues] = useState<SubtitleCue[]>([]);
   const seekAfterTrackLoadRef = useRef<number | null>(null);
 
   const {
@@ -264,6 +267,14 @@ export function AudiobookPlayer({ bookId }: AudiobookPlayerProps) {
     }
   }, [currentTime, chapters, chapterIndex, duration, setChapterIndex]);
 
+  useEffect(() => {
+    const currentChapter = chapters[chapterIndex];
+    if (currentChapter?.id) {
+      setCues([]);
+      loadSubtitleFile(bookId, currentChapter.id).then(setCues).catch(() => setCues([]));
+    }
+  }, [chapterIndex, chapters, bookId]);
+
   const saveProgress = useCallback(() => {
     const audio = playerRef.current?.audio.current;
     if (!audio || !bookId) return;
@@ -369,52 +380,55 @@ export function AudiobookPlayer({ bookId }: AudiobookPlayerProps) {
             {loadError && (
               <p className="mb-3 text-sm text-destructive">{loadError}</p>
             )}
-            <AudioPlayer
-              ref={playerRef}
-              src={audioSrc}
-              preload="metadata"
-              showSkipControls
-              showJumpControls
-              progressJumpSteps={{ backward: 10000, forward: 10000 }}
-              volume={volume}
-              listenInterval={30000}
-              onListen={saveProgress}
-              onPause={pause}
-              onPlay={play}
-              onEnded={handleTrackEnded}
-              onClickPrevious={handlePreviousChapter}
-              onClickNext={handleNextChapter}
-              onSeeking={(event) => {
-                const audio = event.currentTarget as HTMLAudioElement;
-                handleSeek(audio.currentTime);
-              }}
-              onLoadedMetaData={(event) => {
-                const audio = event.currentTarget as HTMLAudioElement;
-                if (!isMultiTrackDirect) {
-                  setDuration(audio.duration || 0);
-                }
-                if (seekAfterTrackLoadRef.current !== null) {
-                  audio.currentTime = seekAfterTrackLoadRef.current;
-                  seekAfterTrackLoadRef.current = null;
-                }
-              }}
-              onError={(event) => {
-                const audio = event.currentTarget as HTMLAudioElement;
-                const currentSrc = audio.currentSrc || audioSrc;
+            <div className="relative">
+              <AudioPlayer
+                ref={playerRef}
+                src={audioSrc}
+                preload="metadata"
+                showSkipControls
+                showJumpControls
+                progressJumpSteps={{ backward: 10000, forward: 10000 }}
+                volume={volume}
+                listenInterval={30000}
+                onListen={saveProgress}
+                onPause={pause}
+                onPlay={play}
+                onEnded={handleTrackEnded}
+                onClickPrevious={handlePreviousChapter}
+                onClickNext={handleNextChapter}
+                onSeeking={(event) => {
+                  const audio = event.currentTarget as HTMLAudioElement;
+                  handleSeek(audio.currentTime);
+                }}
+                onLoadedMetaData={(event) => {
+                  const audio = event.currentTarget as HTMLAudioElement;
+                  if (!isMultiTrackDirect) {
+                    setDuration(audio.duration || 0);
+                  }
+                  if (seekAfterTrackLoadRef.current !== null) {
+                    audio.currentTime = seekAfterTrackLoadRef.current;
+                    seekAfterTrackLoadRef.current = null;
+                  }
+                }}
+                onError={(event) => {
+                  const audio = event.currentTarget as HTMLAudioElement;
+                  const currentSrc = audio.currentSrc || audioSrc;
 
-                if (!currentSrc || (hlsRef.current && !audioSrc)) {
-                  return;
-                }
+                  if (!currentSrc || (hlsRef.current && !audioSrc)) {
+                    return;
+                  }
 
-                if (book?.audio_download_url && currentSrc === book.stream_url) {
-                  setupDirectAudio();
-                } else if (!triedHls) {
-                  void setupHlsStream();
-                } else {
-                  setLoadError('Audio failed to load.');
-                }
-              }}
-            />
+                  if (book?.audio_download_url && currentSrc === book.stream_url) {
+                    setupDirectAudio();
+                  } else if (!triedHls) {
+                    void setupHlsStream();
+                  } else {
+                    setLoadError('Audio failed to load.');
+                  }
+                }}
+              />
+              <SubtitleOverlay currentTime={currentTime} cues={cues} />
+            </div>
 
             <div className="mt-4 grid gap-3 sm:flex sm:flex-wrap sm:items-center sm:justify-center sm:gap-4">
               <div className="flex items-center justify-center gap-2">

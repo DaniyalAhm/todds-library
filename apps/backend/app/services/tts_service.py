@@ -48,30 +48,39 @@ def list_available_voices() -> list[dict]:
 
 def _get_pocket_tts():
     try:
-        from pocket_tts import PocketTTS
+        from pocket_tts import TTSModel
     except ImportError:
         raise TTSError("pocket-tts is not installed. Install with: pip install pocket-tts")
-    return PocketTTS()
+    return TTSModel.load_model(language="english")
+
+
+def _default_model_state(tts):
+    from pocket_tts.modules.stateful_module import init_states
+    return init_states(tts.flow_lm, batch_size=1, sequence_length=1)
 
 
 async def synthesize(text: str, voice_id: str | None = None) -> bytes:
     import soundfile as sf
     import io
+    import torch
 
     voice = voice_id or "default"
     tts = _get_pocket_tts()
 
     if voice == "default":
-        audio = tts.generate(text)
+        state = _default_model_state(tts)
+        audio_tensor = tts.generate_audio(state, text)
     else:
         cloned = _load_cloned_voices()
         if voice not in cloned:
             raise TTSError(f"Voice '{voice}' not found")
         ref_audio_path = cloned[voice]["file_path"]
-        audio = tts.generate(text, voice=str(ref_audio_path))
+        state = tts.get_state_for_audio_prompt(ref_audio_path)
+        audio_tensor = tts.generate_audio(state, text)
 
+    audio_np = audio_tensor.cpu().numpy()
     buf = io.BytesIO()
-    sf.write(buf, audio, samplerate=24000, format="WAV")
+    sf.write(buf, audio_np, samplerate=tts.sample_rate, format="WAV")
     return buf.getvalue()
 
 
@@ -130,6 +139,7 @@ async def generate_book_audio(
     chapter_indices: list[int] | None = None,
 ) -> list[dict]:
     import soundfile as sf
+    import torch
 
     if not os.path.isfile(book_path):
         raise TTSError(f"Book file not found: {book_path}")
@@ -151,17 +161,20 @@ async def generate_book_audio(
         output_path = output_dir / f"chapter_{ch['index']:04d}.wav"
 
         if voice_id == "default":
-            audio = tts.generate(ch["text"])
+            state = _default_model_state(tts)
+            audio_tensor = tts.generate_audio(state, ch["text"])
         else:
             cloned = _load_cloned_voices()
             if voice_id not in cloned:
                 raise TTSError(f"Voice '{voice_id}' not found")
             ref_audio_path = cloned[voice_id]["file_path"]
-            audio = tts.generate(ch["text"], voice=str(ref_audio_path))
+            state = tts.get_state_for_audio_prompt(ref_audio_path)
+            audio_tensor = tts.generate_audio(state, ch["text"])
 
-        sf.write(str(output_path), audio, samplerate=24000)
+        audio_np = audio_tensor.cpu().numpy()
+        sf.write(str(output_path), audio_np, samplerate=tts.sample_rate)
 
-        duration = float(len(audio)) / 24000.0
+        duration = float(len(audio_np)) / float(tts.sample_rate)
         results.append({
             "file_path": str(output_path),
             "duration": duration,

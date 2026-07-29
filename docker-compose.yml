@@ -65,9 +65,11 @@ services:
       SECRET_KEY: ${SECRET_KEY:-change_me_in_production}
       PORT: 8000
       UVICORN_WORKERS: ${UVICORN_WORKERS:-1}
+      TTS_MODELS_DIR: /data/tts_models
     volumes:
       - /mnt/2tb_jellyfin/Books:/books
       - coverdata:/data/covers
+      - ttsdata:/data/tts_models
     ports:
       - "${BACKEND_PORT:-8830}:8000"
     networks:
@@ -146,3 +148,4 @@ volumes:
   coverdata:
   rreading_glasses_data:
   books_data:
+  ttsdata:

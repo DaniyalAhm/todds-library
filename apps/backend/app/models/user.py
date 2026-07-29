@@ -35,3 +35,4 @@ class User(Base):
     libraries = relationship("Library", back_populates="user", lazy="selectin")
     reading_progress = relationship("ReadingProgress", back_populates="user", lazy="selectin")
     bookmarks = relationship("Bookmark", back_populates="user", lazy="selectin")
+    generated_audios = relationship("GeneratedAudio", back_populates="user", lazy="selectin", cascade="all, delete-orphan")

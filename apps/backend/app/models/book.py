@@ -71,6 +71,7 @@ class Book(Base):
     reading_progress = relationship("ReadingProgress", back_populates="book", lazy="selectin")
     bookmarks = relationship("Bookmark", back_populates="book", lazy="selectin")
     metadata_caches = relationship("MetadataCache", back_populates="book", lazy="selectin")
+    generated_audios = relationship("GeneratedAudio", back_populates="book", lazy="selectin", cascade="all, delete-orphan")
 
     @property
     def has_ebook(self) -> bool:

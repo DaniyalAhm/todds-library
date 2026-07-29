@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     covers_dir: str = "/data/covers"
     secret_key: str = "change-me-to-a-real-secret"
     cors_origins: list[str] = ["http://localhost:3000"]
+    tts_models_dir: str = "/data/tts_models"
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 

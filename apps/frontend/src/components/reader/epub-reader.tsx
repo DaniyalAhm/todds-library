@@ -25,8 +25,13 @@ import {
   List,
   X,
   Type,
+  Volume2,
+  Music,
+  StopCircle,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useTTS } from '@/hooks/use-tts';
+import { GenerateAudioDialog } from './generate-audio-dialog';
 
 interface EpubReaderProps {
   bookId: string;
@@ -54,6 +59,14 @@ export function EpubReader({ bookId }: EpubReaderProps) {
   const [loadError, setLoadError] = useState('');
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showToolbar, setShowToolbar] = useState(true);
+  const [showGenerateDialog, setShowGenerateDialog] = useState(false);
+  const [selectedText, setSelectedText] = useState('');
+
+  const tts = useTTS(bookId);
+
+  useEffect(() => {
+    tts.loadVoices();
+  }, []);
 
   useEffect(() => {
     progressLocationRef.current = progress?.location;
@@ -253,6 +266,15 @@ export function EpubReader({ bookId }: EpubReaderProps) {
     }
   };
 
+  const handleSpeakSelection = () => {
+    const selection = window.getSelection();
+    const text = selection?.toString().trim();
+    if (text) {
+      setSelectedText(text);
+      tts.speak(text);
+    }
+  };
+
   return (
     <div className="flex h-full flex-col">
       <div className={cn(
@@ -337,6 +359,44 @@ export function EpubReader({ bookId }: EpubReaderProps) {
               <MoonStar className="h-3 w-3" />
             </Button>
           </div>
+
+          <div className="ml-2 flex items-center gap-1">
+            <Select
+              value={tts.currentVoice || ''}
+              onValueChange={tts.setVoice}
+            >
+              <SelectTrigger className="h-8 w-[120px] text-xs">
+                <SelectValue placeholder="Voice" />
+              </SelectTrigger>
+              <SelectContent>
+                {tts.voices.map((v) => (
+                  <SelectItem key={v.id} value={v.id}>
+                    {v.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Button
+              variant={tts.isPlaying ? 'default' : 'ghost'}
+              size="icon"
+              onClick={() => tts.isPlaying ? tts.stop() : handleSpeakSelection()}
+              title="Speak selection"
+            >
+              {tts.isPlaying ? (
+                <StopCircle className="h-4 w-4" />
+              ) : (
+                <Volume2 className="h-4 w-4" />
+              )}
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => setShowGenerateDialog(true)}
+              title="Generate audio for book"
+            >
+              <Music className="h-4 w-4" />
+            </Button>
+          </div>
         </div>
       </div>
 
@@ -400,6 +460,16 @@ export function EpubReader({ bookId }: EpubReaderProps) {
           )}
         />
       </div>
+
+      <GenerateAudioDialog
+        open={showGenerateDialog}
+        onOpenChange={setShowGenerateDialog}
+        bookId={bookId}
+        toc={toc.map((item: any) => ({ href: item.href, label: item.label }))}
+        onAudioGenerated={() => {
+          setShowGenerateDialog(false);
+        }}
+      />
     </div>
   );
 }

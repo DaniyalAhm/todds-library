@@ -18,6 +18,13 @@ export function setSessionToken(token: string | null) {
   sessionToken = token;
 }
 
+export function getAuthHeaders(): Record<string, string> {
+  if (sessionToken) {
+    return { 'Authorization': `Bearer ${sessionToken}` };
+  }
+  return {};
+}
+
 function getBaseUrl(): string {
   const configured = process.env.NEXT_PUBLIC_API_URL || '/backend-api';
   if (typeof window !== 'undefined' && configured.startsWith('http')) {

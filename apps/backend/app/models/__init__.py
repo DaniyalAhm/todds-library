@@ -5,6 +5,7 @@ from app.models.chapter import Chapter
 from app.models.progress import ReadingProgress
 from app.models.bookmark import Bookmark
 from app.models.metadata_cache import MetadataCache
+from app.models.generated_audio import GeneratedAudio
 
 __all__ = [
     "User",
@@ -14,4 +15,5 @@ __all__ = [
     "ReadingProgress",
     "Bookmark",
     "MetadataCache",
+    "GeneratedAudio",
 ]

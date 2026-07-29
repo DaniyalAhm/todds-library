@@ -36,7 +36,7 @@ export function SubtitleOverlay({ currentTime, cues, className }: SubtitleOverla
 export async function loadSubtitleFile(
   bookId: string,
   chapterId: string,
-  format: 'srt' | 'vtt' = 'vtt'
+  format: 'srt' | 'vtt' = 'srt'
 ): Promise<SubtitleCue[]> {
   try {
     const { getAuthHeaders } = await import('@/lib/api-client');

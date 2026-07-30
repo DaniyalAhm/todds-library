@@ -22,6 +22,7 @@ import {
   User,
 } from 'lucide-react';
 import { formatDuration, formatDate, formatFileSize, getProgressPercent } from '@/lib/utils';
+import { routes } from '@/lib/routes';
 
 export default function BookDetailPage() {
   const params = useParams();
@@ -146,13 +147,13 @@ export default function BookDetailPage() {
 
           <div className="flex flex-wrap gap-2">
             {book.has_ebook && (
-              <Button onClick={() => router.push(`/books/${id}/read`)}>
+              <Button onClick={() => router.push(routes.bookRead(id))}>
                 <BookOpen className="mr-2 h-4 w-4" />
                 {progress && progress.progress > 0 ? 'Continue Reading' : 'Read Online'}
               </Button>
             )}
             {book.has_audiobook && (
-              <Button onClick={() => router.push(`/books/${id}/listen`)}>
+              <Button onClick={() => router.push(routes.bookListen(id))}>
                 <Headphones className="mr-2 h-4 w-4" />
                 {progress && progress.progress > 0 ? 'Continue Listening' : 'Listen'}
               </Button>

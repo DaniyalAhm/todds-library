@@ -4,6 +4,7 @@ import pytest
 from sqlalchemy import delete
 
 from app.models.user import User
+from app.services.auth_service import create_user_jwt, hash_password
 
 
 @pytest.mark.asyncio
@@ -43,3 +44,67 @@ async def test_register_is_forbidden_after_setup(client):
 
     assert response.status_code == 403
     assert response.json() == {"detail": "Initial setup is already complete"}
+
+
+@pytest.mark.asyncio
+async def test_admin_can_create_and_list_users(client, db_session):
+    admin = User(username="admin-users", hashed_password=hash_password("secret"), is_admin=True)
+    db_session.add(admin)
+    await db_session.commit()
+    await db_session.refresh(admin)
+    headers = {"Authorization": f"Bearer {create_user_jwt(admin)}"}
+
+    response = await client.post(
+        "/auth/users",
+        headers=headers,
+        json={
+            "username": "reader",
+            "email": "reader@example.test",
+            "password": "secret",
+            "is_admin": False,
+        },
+    )
+
+    assert response.status_code == 201
+    created = response.json()
+    assert created["username"] == "reader"
+    assert created["email"] == "reader@example.test"
+    assert created["is_admin"] is False
+    assert created["has_password"] is True
+
+    list_response = await client.get("/auth/users", headers=headers)
+    assert list_response.status_code == 200
+    assert {user["username"] for user in list_response.json()["items"]} >= {"admin-users", "reader"}
+
+
+@pytest.mark.asyncio
+async def test_admin_cannot_remove_last_admin_role(client, db_session):
+    await db_session.execute(delete(User))
+    admin = User(username="only-admin", hashed_password=hash_password("secret"), is_admin=True)
+    db_session.add(admin)
+    await db_session.commit()
+    await db_session.refresh(admin)
+    headers = {"Authorization": f"Bearer {create_user_jwt(admin)}"}
+
+    response = await client.patch(
+        f"/auth/users/{admin.id}",
+        headers=headers,
+        json={"is_admin": False},
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "Cannot remove the last admin"}
+
+
+@pytest.mark.asyncio
+async def test_admin_cannot_delete_self(client, db_session):
+    admin = User(username="self-admin", hashed_password=hash_password("secret"), is_admin=True)
+    db_session.add(admin)
+    await db_session.commit()
+    await db_session.refresh(admin)
+    headers = {"Authorization": f"Bearer {create_user_jwt(admin)}"}
+
+    response = await client.delete(f"/auth/users/{admin.id}", headers=headers)
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "Cannot delete your own account"}

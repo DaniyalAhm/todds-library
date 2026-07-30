@@ -24,6 +24,7 @@ import { AddLibraryDialog } from '@/components/libraries/add-library-dialog';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Scan, Trash2, Library, ExternalLink, FolderOpen } from 'lucide-react';
+import { routes } from '@/lib/routes';
 
 export default function LibrariesPage() {
   const { user } = useAuth();
@@ -105,7 +106,7 @@ export default function LibrariesPage() {
                     Scan
                   </Button>
                   <Button variant="outline" size="sm" asChild>
-                    <Link href={`/libraries/${lib.id}`}>
+                    <Link href={routes.library(lib.id)}>
                       <ExternalLink className="mr-1 h-4 w-4" />
                       Browse
                     </Link>

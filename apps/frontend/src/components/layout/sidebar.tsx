@@ -6,17 +6,20 @@ import { cn } from '@/lib/utils';
 import { useAuth } from '@/hooks/use-auth';
 import {
   BookOpen,
+  Cpu,
   LayoutDashboard,
   Library,
   Search,
   Settings,
   Shield,
+  Users,
   BookMarked,
   ChevronLeft,
   ChevronRight,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { routes } from '@/lib/routes';
 
 interface SidebarProps {
   collapsed: boolean;
@@ -26,16 +29,18 @@ interface SidebarProps {
 }
 
 const navItems = [
-  { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { href: '/libraries', label: 'Libraries', icon: Library },
-  { href: '/books', label: 'Books', icon: BookOpen },
-  { href: '/search', label: 'Search', icon: Search },
-  { href: '/settings', label: 'Settings', icon: Settings },
+  { href: routes.dashboard, label: 'Dashboard', icon: LayoutDashboard },
+  { href: routes.libraries, label: 'Libraries', icon: Library },
+  { href: routes.books, label: 'Books', icon: BookOpen },
+  { href: routes.search, label: 'Search', icon: Search },
+  { href: routes.settings, label: 'Settings', icon: Settings },
 ];
 
 const adminItems = [
-  { href: '/admin', label: 'Admin', icon: Shield },
-  { href: '/admin/metadata', label: 'Metadata', icon: BookMarked },
+  { href: routes.admin, label: 'Admin', icon: Shield },
+  { href: routes.adminUsers, label: 'Users', icon: Users },
+  { href: routes.adminMetadata, label: 'Metadata', icon: BookMarked },
+  { href: routes.adminSettings, label: 'Settings', icon: Cpu },
 ];
 
 export function Sidebar({ collapsed, onToggle, mobileOpen = false, onMobileClose }: SidebarProps) {
@@ -53,7 +58,7 @@ export function Sidebar({ collapsed, onToggle, mobileOpen = false, onMobileClose
     >
       <div className="flex h-16 items-center justify-between border-b border-border px-4">
         {!collapsed && (
-          <Link href="/dashboard" className="flex items-center gap-2">
+          <Link href={routes.dashboard} className="flex items-center gap-2">
             <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary">
               <BookOpen className="h-4 w-4 text-primary-foreground" />
             </div>
@@ -61,7 +66,7 @@ export function Sidebar({ collapsed, onToggle, mobileOpen = false, onMobileClose
           </Link>
         )}
         {collapsed && (
-          <Link href="/dashboard" className="mx-auto">
+          <Link href={routes.dashboard} className="mx-auto">
             <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary">
               <BookOpen className="h-4 w-4 text-primary-foreground" />
             </div>

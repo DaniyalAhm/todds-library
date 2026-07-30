@@ -26,18 +26,18 @@ export function ChapterList({
 }: ChapterListProps) {
   if (!chapters || chapters.length === 0) {
     return (
-      <div className={cn('p-4 text-sm text-muted-foreground', className)}>
+      <div className={cn('flex min-h-0 flex-col p-4 text-sm text-muted-foreground', className)}>
         No chapters available
       </div>
     );
   }
 
   return (
-    <div className={cn('', className)}>
-      <h3 className="px-4 py-3 text-sm font-medium text-foreground border-b border-border">
+    <div className={cn('flex min-h-0 flex-col', className)}>
+      <h3 className="shrink-0 border-b border-border px-4 py-3 text-sm font-medium text-foreground">
         Chapters
       </h3>
-      <ScrollArea className="h-full">
+      <ScrollArea className="min-h-0 flex-1">
         <div className="p-2">
           {chapters.map((chapter, idx) => (
             <button

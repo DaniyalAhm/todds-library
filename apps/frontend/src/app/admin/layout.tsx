@@ -4,6 +4,7 @@ import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/hooks/use-auth';
 import { Shell } from '@/components/layout/shell';
+import { routes } from '@/lib/routes';
 
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
   const { user, isAuthenticated, isLoading } = useAuth();
@@ -13,11 +14,11 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   useEffect(() => {
     if (isLoading) return;
     if (!isAuthenticated) {
-      router.replace('/login');
+      router.replace(routes.login);
       return;
     }
     if (!isAdmin) {
-      router.replace('/dashboard');
+      router.replace(routes.dashboard);
     }
   }, [isAdmin, isAuthenticated, isLoading, router]);
 

@@ -5,6 +5,7 @@ import { useBook } from '@/hooks/use-books';
 import { AudiobookPlayer } from '@/components/player/audiobook-player';
 import { Button } from '@/components/ui/button';
 import { ArrowLeft } from 'lucide-react';
+import { routes } from '@/lib/routes';
 
 export default function ListenPage() {
   const params = useParams();
@@ -14,7 +15,7 @@ export default function ListenPage() {
 
   if (isLoading) {
     return (
-      <div className="flex h-screen items-center justify-center bg-background">
+      <div className="flex h-dvh items-center justify-center bg-background">
         <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
       </div>
     );
@@ -22,7 +23,7 @@ export default function ListenPage() {
 
   if (!book) {
     return (
-      <div className="flex h-screen flex-col items-center justify-center bg-background">
+      <div className="flex h-dvh flex-col items-center justify-center bg-background">
         <p className="text-muted-foreground">Book not found</p>
         <Button variant="link" onClick={() => router.back()}>
           Go back
@@ -32,13 +33,13 @@ export default function ListenPage() {
   }
 
   if (!book.has_audiobook && book.has_ebook) {
-    router.replace(`/books/${id}/read`);
+    router.replace(routes.bookRead(id));
     return null;
   }
 
   return (
-    <div className="flex h-screen flex-col bg-background">
-      <div className="flex items-center gap-3 border-b border-border bg-card px-3 py-2 sm:gap-4 sm:px-4">
+    <div className="flex h-dvh flex-col bg-background">
+      <div className="flex shrink-0 items-center gap-3 border-b border-border bg-card px-3 py-2 sm:gap-4 sm:px-4">
         <Button variant="ghost" size="icon" onClick={() => router.back()}>
           <ArrowLeft className="h-5 w-5" />
         </Button>
@@ -49,7 +50,7 @@ export default function ListenPage() {
           )}
         </div>
       </div>
-      <div className="flex-1 overflow-hidden">
+      <div className="min-h-0 flex-1 overflow-hidden">
         <AudiobookPlayer bookId={id} />
       </div>
     </div>

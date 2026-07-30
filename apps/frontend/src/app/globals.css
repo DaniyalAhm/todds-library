@@ -164,17 +164,96 @@
   }
 
   @media (max-width: 640px) {
-    .rhap_container {
-      padding: 0.75rem;
+    .tl-audiobook-player.rhap_container {
+      padding: 0.875rem;
+      border-radius: 0.75rem;
     }
 
-    .rhap_controls-section {
+    .tl-audiobook-player .rhap_main {
+      gap: 0.7rem;
+    }
+
+    .tl-audiobook-player .rhap_progress-section {
+      align-items: center;
+      gap: 0.45rem;
+      order: 1;
+    }
+
+    .tl-audiobook-player .rhap_progress-container {
+      height: 1.75rem;
+      margin: 0;
+    }
+
+    .tl-audiobook-player .rhap_progress-bar {
+      height: 0.45rem;
+      border-radius: 9999px;
+    }
+
+    .tl-audiobook-player .rhap_progress-filled,
+    .tl-audiobook-player .rhap_progress-bar-show-download {
+      border-radius: 9999px;
+    }
+
+    .tl-audiobook-player .rhap_progress-indicator {
+      height: 1rem !important;
+      margin-left: -0.5rem !important;
+      top: -0.3rem !important;
+      width: 1rem !important;
+    }
+
+    .tl-audiobook-player .rhap_time {
+      min-width: 2.65rem;
+      font-size: 0.7rem;
+      line-height: 1rem;
+    }
+
+    .tl-audiobook-player .rhap_controls-section {
       justify-content: center;
+      order: 2;
+      row-gap: 0.35rem;
     }
 
-    .rhap_additional-controls,
-    .rhap_volume-controls {
-      flex: 0 1 auto;
+    .tl-audiobook-player .rhap_main-controls {
+      flex: 1 0 100%;
+      justify-content: center;
+      order: 1;
+    }
+
+    .tl-audiobook-player .rhap_additional-controls {
+      flex: 0 0 auto;
+      justify-content: flex-end;
+      min-width: 3rem;
+      order: 2;
+    }
+
+    .tl-audiobook-player .rhap_volume-controls {
+      display: none;
+    }
+
+    .tl-audiobook-player .rhap_button-clear {
+      min-height: 2.75rem;
+      min-width: 2.75rem;
+    }
+
+    .tl-audiobook-player .rhap_main-controls-button {
+      height: 3rem;
+      margin: 0 0.2rem;
+      width: 3rem;
+    }
+
+    .tl-audiobook-player .rhap_play-pause-button {
+      height: 3.75rem;
+      width: 3.75rem;
+    }
+
+    .tl-audiobook-player .rhap_main-controls-button svg {
+      height: 1.55rem;
+      width: 1.55rem;
+    }
+
+    .tl-audiobook-player .rhap_play-pause-button svg {
+      height: 2.15rem;
+      width: 2.15rem;
     }
   }
 }

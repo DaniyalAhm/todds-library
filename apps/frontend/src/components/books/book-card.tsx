@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
 import { BookOpen, Headphones } from 'lucide-react';
+import { routes } from '@/lib/routes';
 
 interface BookCardProps {
   book: {
@@ -47,7 +48,7 @@ export function BookCard({ book }: BookCardProps) {
   const progress = book.progress ?? 0;
 
   return (
-    <Link href={`/books/${book.id}`} className="group block">
+    <Link href={routes.book(book.id)} className="group block">
       <div className="relative overflow-hidden rounded-lg border border-border bg-card transition-all hover:border-primary/50 hover:shadow-md">
         <div className="relative aspect-[2/3] overflow-hidden bg-muted">
           {book.cover ? (

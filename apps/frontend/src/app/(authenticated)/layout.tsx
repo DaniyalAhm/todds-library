@@ -4,6 +4,7 @@ import { useAuth } from '@/hooks/use-auth';
 import { useRouter } from 'next/navigation';
 import { useEffect } from 'react';
 import { Shell } from '@/components/layout/shell';
+import { routes } from '@/lib/routes';
 
 export default function AuthenticatedLayout({
   children,
@@ -15,7 +16,7 @@ export default function AuthenticatedLayout({
 
   useEffect(() => {
     if (!isLoading && !isAuthenticated) {
-      router.replace('/login');
+      router.replace(routes.login);
     }
   }, [isAuthenticated, isLoading, router]);
 

@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Search, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { routes } from '@/lib/routes';
 
 function SearchContent() {
   const searchParams = useSearchParams();
@@ -29,7 +30,7 @@ function SearchContent() {
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
     if (query.trim()) {
-      router.push(`/search?q=${encodeURIComponent(query.trim())}`);
+      router.push(routes.searchQuery(query.trim()));
     }
   };
 

@@ -31,6 +31,8 @@ type Book = {
   id: string;
   title: string;
   file_format: string;
+  file_size: number;
+  audio_track_count: number;
   chapters?: Chapter[];
 };
 
@@ -52,11 +54,14 @@ test.beforeAll(async () => {
   const data = await response.json();
   const books: Book[] = data.items || data;
 
-  audiobook = books.find((b) =>
-    ['mp3', 'm4b', 'flac', 'ogg', 'aac', 'wma'].includes(b.file_format)
-  );
-  if (audiobook?.chapters && audiobook.chapters.length > 0) {
-    testChapter = audiobook.chapters[0];
+  const candidates = books
+    .filter((b) => ['mp3', 'm4b', 'flac', 'ogg', 'aac', 'wma'].includes(b.file_format))
+    .filter((b) => b.file_size > 0 && b.chapters && b.chapters.length > 0)
+    .sort((a, b) => (a.audio_track_count || 1) - (b.audio_track_count || 1));
+
+  audiobook = candidates[0];
+  if (audiobook) {
+    testChapter = audiobook.chapters![0];
   }
 });
 

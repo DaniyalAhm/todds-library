@@ -16,8 +16,16 @@ class Settings(BaseSettings):
     covers_dir: str = "/data/covers"
     secret_key: str = "change-me-to-a-real-secret"
     cors_origins: list[str] = ["http://localhost:3000"]
-    asr_model_id: str = "openai/whisper-small"
+    asr_model_id: str = "small"
     asr_models_dir: str = "/data/asr_models"
+    asr_device: str = "auto"
+    asr_gpu_index: int = 0
+    asr_compute_type: str = "float32"
+    subtitle_gen_mode: str = "manual"
+    auto_gen_language: str = "auto"
+    batch_size: int = 1
+    chunk_length_s: int = 30
+    vad_filter: bool = False
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 

@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { Input } from '@/components/ui/input';
 import { Search } from 'lucide-react';
+import { routes } from '@/lib/routes';
 
 export function SearchBar({ className }: { className?: string }) {
   const [query, setQuery] = useState('');
@@ -24,7 +25,7 @@ export function SearchBar({ className }: { className?: string }) {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (query.trim()) {
-      router.push(`/search?q=${encodeURIComponent(query.trim())}`);
+      router.push(routes.searchQuery(query.trim()));
     }
   };
 

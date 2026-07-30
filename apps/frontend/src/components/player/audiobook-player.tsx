@@ -2,12 +2,15 @@
 
 import { useEffect, useRef, useCallback, useState } from 'react';
 import AudioPlayer from 'react-h5-audio-player';
-import { useBook, useBookProgress, useUpdateProgress } from '@/hooks/use-books';
+import { useBook, useBookProgress, useGenerateChapterSubtitles, useUpdateProgress } from '@/hooks/use-books';
+import { cn } from '@/lib/utils';
 import { usePlayer } from '@/hooks/use-player';
 import { ChapterList } from './chapter-list';
 import { SleepTimer } from './sleep-timer';
 import { Slider } from '@/components/ui/slider';
-import { Headphones } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { toast } from '@/components/ui/toast';
+import { Captions, CaptionsOff, Headphones, Maximize, Minimize, PanelTop, Pause, Play, SkipBack, SkipForward } from 'lucide-react';
 import { SubtitleOverlay, loadSubtitleFile } from '@/components/reader/subtitle-overlay';
 import type { SubtitleCue } from '@/components/reader/subtitle-overlay';
 
@@ -19,6 +22,7 @@ export function AudiobookPlayer({ bookId }: AudiobookPlayerProps) {
   const { data: book } = useBook(bookId);
   const { data: progress } = useBookProgress(bookId);
   const updateProgress = useUpdateProgress(bookId);
+  const generateChapterSubtitles = useGenerateChapterSubtitles(bookId);
   const playerRef = useRef<AudioPlayer>(null);
   const hlsRef = useRef<any>(null);
   const [audioSrc, setAudioSrc] = useState('');
@@ -26,7 +30,15 @@ export function AudiobookPlayer({ bookId }: AudiobookPlayerProps) {
   const [triedHls, setTriedHls] = useState(false);
   const [trackIndex, setTrackIndex] = useState(0);
   const [cues, setCues] = useState<SubtitleCue[]>([]);
+  const [captionsEnabled, setCaptionsEnabled] = useState(true);
+  const [subtitleMode, setSubtitleMode] = useState<'panel' | 'overlay'>('panel');
+  const hydratedProgressBookRef = useRef<string | null>(null);
   const seekAfterTrackLoadRef = useRef<number | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [showFullscreenControls, setShowFullscreenControls] = useState(true);
+  const fullscreenControlsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const playbackTimeFrameRef = useRef<number | null>(null);
 
   const {
     currentTime,
@@ -36,8 +48,10 @@ export function AudiobookPlayer({ bookId }: AudiobookPlayerProps) {
     chapterIndex,
     chapters,
     sleepTimerEnd,
+    isPlaying,
     play,
     pause,
+    togglePlay,
     seek,
     setVolume,
     setSpeed,
@@ -52,6 +66,7 @@ export function AudiobookPlayer({ bookId }: AudiobookPlayerProps) {
 
   useEffect(() => {
     setCurrentBook(bookId);
+    hydratedProgressBookRef.current = null;
     return () => {
       setCurrentBook(null);
       setCurrentTime(0);
@@ -119,14 +134,15 @@ export function AudiobookPlayer({ bookId }: AudiobookPlayerProps) {
   const isMultiTrackDirect = (book?.audio_track_count || 0) > 1;
 
   useEffect(() => {
-    if (progress && chapters.length > 0 && isMultiTrackDirect) {
+    if (progress && chapters.length > 0 && isMultiTrackDirect && hydratedProgressBookRef.current !== bookId) {
+      hydratedProgressBookRef.current = bookId;
       const position = progress.position || 0;
       const nextTrackIndex = trackForPosition(position);
       setTrackIndex(nextTrackIndex);
       seek(position);
       seekAfterTrackLoadRef.current = Math.max(0, position - trackStart(nextTrackIndex));
     }
-  }, [chapters.length, isMultiTrackDirect, progress, seek, trackForPosition, trackStart]);
+  }, [bookId, chapters.length, isMultiTrackDirect, progress, seek, trackForPosition, trackStart]);
 
   const setupDirectAudio = useCallback(() => {
     if (!book?.audio_download_url) {
@@ -215,13 +231,19 @@ export function AudiobookPlayer({ bookId }: AudiobookPlayerProps) {
     };
   }, [setupAudio]);
 
+  const syncCurrentTimeFromAudio = useCallback(() => {
+    const audio = playerRef.current?.audio.current;
+    if (!audio) return;
+    const globalTime = isMultiTrackDirect ? trackStart(trackIndex) + audio.currentTime : audio.currentTime;
+    setCurrentTime(globalTime);
+  }, [isMultiTrackDirect, setCurrentTime, trackIndex, trackStart]);
+
   useEffect(() => {
     const audio = playerRef.current?.audio.current;
     if (!audio) return;
 
     const onTimeUpdate = () => {
-      const globalTime = isMultiTrackDirect ? trackStart(trackIndex) + audio.currentTime : audio.currentTime;
-      setCurrentTime(globalTime);
+      syncCurrentTimeFromAudio();
     };
     const onDurationChange = () => {
       if (!isMultiTrackDirect) {
@@ -236,7 +258,36 @@ export function AudiobookPlayer({ bookId }: AudiobookPlayerProps) {
       audio.removeEventListener('timeupdate', onTimeUpdate);
       audio.removeEventListener('durationchange', onDurationChange);
     };
-  }, [setCurrentTime, setDuration, audioSrc, isMultiTrackDirect, trackIndex, trackStart]);
+  }, [setDuration, audioSrc, isMultiTrackDirect, syncCurrentTimeFromAudio]);
+
+  useEffect(() => {
+    if (!isPlaying) {
+      if (playbackTimeFrameRef.current !== null) {
+        cancelAnimationFrame(playbackTimeFrameRef.current);
+        playbackTimeFrameRef.current = null;
+      }
+      syncCurrentTimeFromAudio();
+      return;
+    }
+
+    const tick = () => {
+      const audio = playerRef.current?.audio.current;
+      if (audio && !audio.paused) {
+        const globalTime = isMultiTrackDirect ? trackStart(trackIndex) + audio.currentTime : audio.currentTime;
+        setCurrentTime(globalTime);
+      }
+      playbackTimeFrameRef.current = requestAnimationFrame(tick);
+    };
+
+    playbackTimeFrameRef.current = requestAnimationFrame(tick);
+
+    return () => {
+      if (playbackTimeFrameRef.current !== null) {
+        cancelAnimationFrame(playbackTimeFrameRef.current);
+        playbackTimeFrameRef.current = null;
+      }
+    };
+  }, [isPlaying, isMultiTrackDirect, setCurrentTime, syncCurrentTimeFromAudio, trackIndex, trackStart]);
 
   useEffect(() => {
     const audio = playerRef.current?.audio.current;
@@ -271,9 +322,63 @@ export function AudiobookPlayer({ bookId }: AudiobookPlayerProps) {
     const currentChapter = chapters[chapterIndex];
     if (currentChapter?.id) {
       setCues([]);
-      loadSubtitleFile(bookId, currentChapter.id).then(setCues).catch(() => setCues([]));
+      loadSubtitleFile(bookId, currentChapter.id)
+        .then((loadedCues) => setCues(normalizeCuesToPlaybackTimeline(loadedCues, currentChapter)))
+        .catch(() => setCues([]));
     }
   }, [chapterIndex, chapters, bookId]);
+
+  useEffect(() => {
+    const onFullscreenChange = () => {
+      setIsFullscreen(!!document.fullscreenElement);
+    };
+    document.addEventListener('fullscreenchange', onFullscreenChange);
+    return () => document.removeEventListener('fullscreenchange', onFullscreenChange);
+  }, []);
+
+  const toggleFullscreen = () => {
+    if (document.fullscreenElement) {
+      document.exitFullscreen();
+    } else {
+      containerRef.current?.requestFullscreen();
+    }
+  };
+
+  const startControlsTimer = useCallback(() => {
+    if (fullscreenControlsTimerRef.current) {
+      clearTimeout(fullscreenControlsTimerRef.current);
+    }
+    fullscreenControlsTimerRef.current = setTimeout(() => {
+      setShowFullscreenControls(false);
+    }, 3000);
+  }, []);
+
+  const handleFullscreenMouseMove = useCallback(() => {
+    setShowFullscreenControls(true);
+    startControlsTimer();
+  }, [startControlsTimer]);
+
+  const handleSeekRelative = useCallback(
+    (delta: number) => {
+      let audio: HTMLAudioElement | null = null;
+      if (isMultiTrackDirect) {
+        const el = playerRef.current?.audio.current;
+        if (el) audio = el;
+      } else {
+        audio = playerRef.current?.audio.current ?? null;
+      }
+      if (!audio) return;
+      const newTime = Math.max(0, Math.min(audio.duration || 0, audio.currentTime + delta));
+      audio.currentTime = newTime;
+    },
+    [isMultiTrackDirect]
+  );
+
+  const formatTime = (seconds: number) => {
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60);
+    return `${m}:${s.toString().padStart(2, '0')}`;
+  };
 
   const saveProgress = useCallback(() => {
     const audio = playerRef.current?.audio.current;
@@ -314,6 +419,14 @@ export function AudiobookPlayer({ bookId }: AudiobookPlayerProps) {
     }
   };
 
+  const handleNativeAudioSeek = (localTime: number) => {
+    if (isMultiTrackDirect) {
+      seek(trackStart(trackIndex) + localTime);
+      return;
+    }
+    seek(localTime);
+  };
+
   const handlePreviousChapter = () => {
     const previousIndex = currentTime - (chapters[chapterIndex]?.start || 0) > 5
       ? chapterIndex
@@ -345,16 +458,51 @@ export function AudiobookPlayer({ bookId }: AudiobookPlayerProps) {
     }
   };
 
+  const handleGenerateSubtitles = async () => {
+    const currentChapter = chapters[chapterIndex];
+    if (!currentChapter?.id) return;
+
+    try {
+      await generateChapterSubtitles.mutateAsync({ chapterId: currentChapter.id });
+      const nextCues = await loadSubtitleFile(bookId, currentChapter.id);
+      setCues(normalizeCuesToPlaybackTimeline(nextCues, currentChapter));
+      toast({
+        title: 'Subtitles generated',
+        description: nextCues.length > 0
+          ? 'Captions are ready for this chapter.'
+          : 'Subtitle files were created for this chapter.',
+        variant: 'success',
+      });
+    } catch (error) {
+      const message =
+        typeof error === 'object' && error !== null && 'message' in error
+          ? String((error as { message?: unknown }).message)
+          : 'Speech recognition failed for this chapter.';
+      toast({
+        title: 'Subtitle generation failed',
+        description: message,
+        variant: 'destructive',
+      });
+    }
+  };
+
   const sleepRemaining = sleepTimerEnd
     ? Math.ceil((sleepTimerEnd - Date.now()) / 60000)
     : undefined;
+  const currentChapter = chapters[chapterIndex];
+  const subtitleTime = currentTime;
+
+  const selectChapter = (idx: number) => {
+    setChapterIndex(idx);
+    handleSeek(chapters[idx]?.start || 0);
+  };
 
   return (
-      <div className="flex h-full flex-col">
-      <div className="flex flex-1 overflow-hidden">
-        <div className="flex min-w-0 flex-1 flex-col items-center overflow-y-auto p-4 sm:justify-center sm:p-6 lg:p-8">
-          <div className="mb-5 sm:mb-8">
-            <div className="relative mx-auto aspect-[2/3] w-36 overflow-hidden rounded-xl bg-muted shadow-2xl sm:w-48 md:w-56 lg:w-64">
+    <div ref={containerRef} className="flex h-full min-h-0 flex-col">
+      <div className={cn('flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row', isFullscreen && 'hidden')}>
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col items-center overflow-y-auto px-4 py-3 sm:p-6 lg:justify-center lg:p-8">
+          <div className="mb-3 shrink-0 sm:mb-8">
+            <div className="relative mx-auto aspect-[2/3] w-28 overflow-hidden rounded-xl bg-muted shadow-2xl sm:w-48 md:w-56 lg:w-64">
               {book?.cover ? (
                 <img
                   src={book.cover}
@@ -369,7 +517,7 @@ export function AudiobookPlayer({ bookId }: AudiobookPlayerProps) {
             </div>
           </div>
 
-          <div className="mb-2 text-center">
+          <div className="mb-3 min-w-0 max-w-full text-center sm:mb-2">
             <h2 className="line-clamp-2 text-lg font-bold text-foreground sm:text-xl">{book?.title}</h2>
             {book?.author && (
               <p className="text-sm text-muted-foreground">{book.author}</p>
@@ -380,9 +528,18 @@ export function AudiobookPlayer({ bookId }: AudiobookPlayerProps) {
             {loadError && (
               <p className="mb-3 text-sm text-destructive">{loadError}</p>
             )}
+            {captionsEnabled && subtitleMode === 'panel' && (
+              <SubtitleOverlay
+                currentTime={subtitleTime}
+                cues={cues}
+                mode="panel"
+                className="mb-3"
+              />
+            )}
             <div className="relative">
               <AudioPlayer
                 ref={playerRef}
+                className="tl-audiobook-player"
                 src={audioSrc}
                 preload="metadata"
                 showSkipControls
@@ -398,7 +555,7 @@ export function AudiobookPlayer({ bookId }: AudiobookPlayerProps) {
                 onClickNext={handleNextChapter}
                 onSeeking={(event) => {
                   const audio = event.currentTarget as HTMLAudioElement;
-                  handleSeek(audio.currentTime);
+                  handleNativeAudioSeek(audio.currentTime);
                 }}
                 onLoadedMetaData={(event) => {
                   const audio = event.currentTarget as HTMLAudioElement;
@@ -427,11 +584,54 @@ export function AudiobookPlayer({ bookId }: AudiobookPlayerProps) {
                   }
                 }}
               />
-              <SubtitleOverlay currentTime={currentTime} cues={cues} />
+              {captionsEnabled && subtitleMode === 'overlay' && (
+                <SubtitleOverlay currentTime={subtitleTime} cues={cues} mode="overlay" />
+              )}
             </div>
 
-            <div className="mt-4 grid gap-3 sm:flex sm:flex-wrap sm:items-center sm:justify-center sm:gap-4">
-              <div className="flex items-center justify-center gap-2">
+            <div className="mt-4 grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center sm:justify-center sm:gap-4">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={handleGenerateSubtitles}
+                disabled={!currentChapter?.id || generateChapterSubtitles.isPending}
+                className="min-w-0 justify-center px-2"
+              >
+                <Captions className="mr-2 h-4 w-4" />
+                <span className="truncate">
+                  {generateChapterSubtitles.isPending ? 'Generating...' : 'Generate Subtitles'}
+                </span>
+              </Button>
+
+              <Button
+                type="button"
+                variant={captionsEnabled ? 'secondary' : 'outline'}
+                size="sm"
+                onClick={() => setCaptionsEnabled((enabled) => !enabled)}
+                className="justify-center px-2"
+              >
+                {captionsEnabled ? (
+                  <Captions className="mr-2 h-4 w-4" />
+                ) : (
+                  <CaptionsOff className="mr-2 h-4 w-4" />
+                )}
+                Captions
+              </Button>
+
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setSubtitleMode((mode) => mode === 'panel' ? 'overlay' : 'panel')}
+                disabled={!captionsEnabled}
+                className="justify-center px-2"
+              >
+                <PanelTop className="mr-2 h-4 w-4" />
+                {subtitleMode === 'panel' ? 'Panel' : 'Overlay'}
+              </Button>
+
+              <div className="flex items-center justify-center gap-2 rounded-md border border-border bg-card px-2 py-1.5 sm:border-0 sm:bg-transparent sm:p-0">
                 <span className="text-xs text-muted-foreground">Speed:</span>
                 <select
                   value={speed}
@@ -446,7 +646,7 @@ export function AudiobookPlayer({ bookId }: AudiobookPlayerProps) {
                 </select>
               </div>
 
-              <div className="flex items-center justify-center gap-2">
+              <div className="hidden items-center justify-center gap-2 sm:flex">
                 <span className="text-xs text-muted-foreground">Vol:</span>
                 <Slider
                   value={[volume * 100]}
@@ -457,27 +657,165 @@ export function AudiobookPlayer({ bookId }: AudiobookPlayerProps) {
                 />
               </div>
 
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={toggleFullscreen}
+                className="justify-center px-2"
+              >
+                {isFullscreen ? <Minimize className="mr-2 h-4 w-4" /> : <Maximize className="mr-2 h-4 w-4" />}
+                {isFullscreen ? 'Exit' : 'Fullscreen'}
+              </Button>
+
               <SleepTimer
                 isActive={!!sleepTimerEnd}
                 remainingMinutes={sleepRemaining}
                 onSetTimer={(m) => setSleepTimer(m === -1 ? 9999 : m)}
                 onClearTimer={clearSleepTimer}
+                className="justify-self-center sm:justify-self-auto"
               />
             </div>
           </div>
         </div>
 
-        <div className="hidden w-96 shrink-0 border-l border-border bg-card lg:block">
+        <div className="min-h-0 h-[min(36dvh,18rem)] shrink-0 border-t border-border bg-card sm:h-[min(42dvh,24rem)] lg:h-auto lg:w-96 lg:border-l lg:border-t-0">
           <ChapterList
             chapters={chapters}
             currentChapterIndex={chapterIndex}
-            onSelectChapter={(idx) => {
-              setChapterIndex(idx);
-              handleSeek(chapters[idx]?.start || 0);
-            }}
+            onSelectChapter={selectChapter}
+            className="h-full"
           />
         </div>
       </div>
+
+      {isFullscreen && (
+        <div
+          className="relative flex flex-1 flex-col bg-black"
+          onMouseMove={handleFullscreenMouseMove}
+          onMouseEnter={() => setShowFullscreenControls(true)}
+        >
+          {book?.cover && (
+            <>
+              <img
+                src={book.cover}
+                alt=""
+                className="absolute inset-0 h-full w-full object-cover blur-2xl opacity-30"
+              />
+              <div className="absolute inset-0 bg-black/50" />
+            </>
+          )}
+
+          <div className="relative flex flex-1 items-center justify-center">
+            {captionsEnabled ? (
+              <SubtitleOverlay
+                currentTime={subtitleTime}
+                cues={cues}
+                mode="fullscreen"
+              />
+            ) : (
+              <p className="text-center text-xl text-white/50">Captions disabled</p>
+            )}
+          </div>
+
+          <div
+            className={cn(
+              'relative transition-opacity duration-300',
+              showFullscreenControls ? 'opacity-100' : 'opacity-0'
+            )}
+          >
+            <div className="flex items-center justify-between bg-gradient-to-t from-black/80 to-transparent px-4 pb-6 pt-12">
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={handlePreviousChapter}
+                  className="rounded p-2 text-white/80 hover:bg-white/10 hover:text-white"
+                >
+                  <SkipBack className="h-5 w-5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleSeekRelative(-10)}
+                  className="rounded p-2 text-white/80 hover:bg-white/10 hover:text-white"
+                >
+                  <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="11 17 6 12 11 7" />
+                    <polyline points="18 17 13 12 18 7" />
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  onClick={togglePlay}
+                  className="flex h-10 w-10 items-center justify-center rounded-full bg-white/20 text-white hover:bg-white/30"
+                >
+                  {isPlaying ? <Pause className="h-5 w-5" /> : <Play className="h-5 w-5" />}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleSeekRelative(10)}
+                  className="rounded p-2 text-white/80 hover:bg-white/10 hover:text-white"
+                >
+                  <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="13 17 18 12 13 7" />
+                    <polyline points="6 17 11 12 6 7" />
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleNextChapter}
+                  className="rounded p-2 text-white/80 hover:bg-white/10 hover:text-white"
+                >
+                  <SkipForward className="h-5 w-5" />
+                </button>
+                <span className="ml-2 text-sm text-white/70">
+                  {formatTime(currentTime)} / {formatTime(duration || 0)}
+                </span>
+              </div>
+
+              <button
+                type="button"
+                onClick={toggleFullscreen}
+                className="rounded p-2 text-white/80 hover:bg-white/10 hover:text-white"
+              >
+                <Minimize className="h-5 w-5" />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
+}
+
+function normalizeCuesToPlaybackTimeline(
+  cues: SubtitleCue[],
+  chapter: { start: number; end: number }
+): SubtitleCue[] {
+  if (cues.length === 0 || chapter.start <= 0) {
+    return cues;
+  }
+
+  const chapterDuration = Math.max(0, chapter.end - chapter.start);
+  if (chapterDuration <= 0) {
+    return cues;
+  }
+
+  const maxCueEnd = Math.max(...cues.map((cue) => cue.end));
+  const timestampTolerance = 2;
+  const cuesLookChapterLocal = maxCueEnd <= chapterDuration + timestampTolerance;
+
+  if (!cuesLookChapterLocal) {
+    return cues;
+  }
+
+  return cues.map((cue) => ({
+    ...cue,
+    start: cue.start + chapter.start,
+    end: cue.end + chapter.start,
+    words: cue.words?.map((word) => ({
+      ...word,
+      start: word.start + chapter.start,
+      end: word.end + chapter.start,
+    })),
+  }));
 }

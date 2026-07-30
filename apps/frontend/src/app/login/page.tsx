@@ -7,6 +7,7 @@ import { BookOpen } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { getSetupStatus } from '@/lib/auth-api';
+import { routes } from '@/lib/routes';
 
 export default function LoginPage() {
   const { isAuthenticated, isLoading, loginLocal, login } = useAuth();
@@ -21,7 +22,7 @@ export default function LoginPage() {
 
   useEffect(() => {
     if (isAuthenticated) {
-      router.replace('/dashboard');
+      router.replace(routes.dashboard);
     }
     
     // Check if Authentik is configured by checking environment variables
@@ -39,7 +40,7 @@ export default function LoginPage() {
     if (result?.error) {
       setError('Invalid username or password');
     } else if (result?.ok) {
-      router.replace('/dashboard');
+      router.replace(routes.dashboard);
     }
     setSubmitting(false);
   };
@@ -50,7 +51,7 @@ export default function LoginPage() {
         const data = await getSetupStatus();
         setNeedsSetup(Boolean(data.needs_setup));
         if (data.needs_setup) {
-          router.replace('/register');
+          router.replace(routes.register);
         }
       } catch (err) {
         setNeedsSetup(false);
@@ -157,7 +158,7 @@ export default function LoginPage() {
           
           {needsSetup && (
             <div className="pt-4 text-center">
-              <a href="/register" className="text-sm text-primary hover:underline">
+              <a href={routes.register} className="text-sm text-primary hover:underline">
                 Complete server setup
               </a>
             </div>

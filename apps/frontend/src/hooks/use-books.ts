@@ -207,6 +207,15 @@ export function useUpdateBookMetadata(bookId: string) {
   });
 }
 
+export function useGenerateChapterSubtitles(bookId: string) {
+  return useMutation({
+    mutationFn: ({ chapterId }: { chapterId: string }) =>
+      api.post<{ status: string; subtitle_path: string; chapter_id: string }>(
+        `/books/${bookId}/chapters/${chapterId}/generate/subtitles`
+      ),
+  });
+}
+
 export function useLookupBookMetadata(bookId: string) {
   return useMutation({
     mutationFn: (params?: { title?: string; author?: string; isbn?: string; asin?: string; refresh?: boolean }) =>

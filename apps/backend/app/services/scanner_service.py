@@ -174,6 +174,8 @@ async def scan_library(
     new_count = 0
     updated_count = 0
     removed_count = 0
+    new_ids: list[UUID] = []
+    updated_ids: list[UUID] = []
     enrich_ids: list[UUID] = []
 
     # Process new and updated files
@@ -187,6 +189,7 @@ async def scan_library(
                 await update_book_in_db(db, existing.id, metadata)
                 await asyncio.to_thread(index_book_in_meili, meili, existing)
                 enrich_ids.append(existing.id)
+                updated_ids.append(existing.id)
                 updated_count += 1
         elif info["path"] in existing_books_by_path:
             existing = existing_books_by_path[info["path"]]
@@ -198,6 +201,7 @@ async def scan_library(
             await update_book_in_db(db, existing.id, metadata)
             await asyncio.to_thread(index_book_in_meili, meili, existing)
             enrich_ids.append(existing.id)
+            updated_ids.append(existing.id)
             updated_count += 1
         else:
             metadata = await parse_book_file(info["path"], info["format"], str(base_path), info.get("audio_files"))
@@ -208,6 +212,7 @@ async def scan_library(
             if book:
                 await asyncio.to_thread(index_book_in_meili, meili, book)
                 enrich_ids.append(book.id)
+                new_ids.append(book.id)
                 new_count += 1
 
     for book_id in enrich_ids:
@@ -236,6 +241,8 @@ async def scan_library(
         "new": new_count,
         "updated": updated_count,
         "removed": removed_count,
+        "new_ids": new_ids,
+        "updated_ids": updated_ids,
     }
 
 

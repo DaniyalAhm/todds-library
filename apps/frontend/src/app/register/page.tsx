@@ -7,6 +7,7 @@ import { BookOpen } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { fetchAuthApi, getSetupStatus } from '@/lib/auth-api';
+import { routes } from '@/lib/routes';
 
 export default function RegisterPage() {
   const router = useRouter();
@@ -22,7 +23,7 @@ export default function RegisterPage() {
       try {
         const data = await getSetupStatus();
         if (!data.needs_setup) {
-          router.replace('/login');
+          router.replace(routes.login);
         }
       } catch (err) {
         setError('Unable to check setup status');
@@ -66,11 +67,11 @@ export default function RegisterPage() {
         username,
         password,
         redirect: false,
-        callbackUrl: '/dashboard',
+        callbackUrl: routes.dashboard,
       });
       
       if (loginResult?.ok) {
-        router.replace('/dashboard');
+        router.replace(routes.dashboard);
       } else {
         setError('Registration successful but login failed. Please contact support.');
       }

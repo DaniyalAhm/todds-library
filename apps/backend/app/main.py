@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
+from alembic.config import Config
+from alembic import command
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.router import router
+from app.api.settings import recover_interrupted_generation_logs
 from app.config import settings
 from app.database import init_db
 
@@ -19,6 +23,9 @@ logging.basicConfig(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, lambda: command.upgrade(Config("alembic.ini"), "head"))
+    await recover_interrupted_generation_logs()
     yield
     await app.state.engine.dispose() if hasattr(app.state, "engine") else None
 

@@ -2,6 +2,7 @@
 
 import { useSession, signIn, signOut } from 'next-auth/react';
 import { useCallback } from 'react';
+import { routes } from '@/lib/routes';
 
 export function useAuth() {
   const { data: session, status } = useSession();
@@ -17,11 +18,11 @@ export function useAuth() {
         username,
         password,
         redirect: false,
-        callbackUrl: '/dashboard',
+        callbackUrl: routes.dashboard,
       }),
     []
   );
-  const logout = useCallback(() => signOut({ callbackUrl: '/login' }), []);
+  const logout = useCallback(() => signOut({ callbackUrl: routes.login }), []);
 
   return {
     user,

@@ -3,15 +3,18 @@
 import Link from 'next/link';
 import { useLibraries, useScanLibrary } from '@/hooks/use-libraries';
 import { useBooks } from '@/hooks/use-books';
+import { useAdminUsers } from '@/hooks/use-admin-users';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Library, BookOpen, Shield, RefreshCw, FolderOpen, Plus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { AddLibraryDialog } from '@/components/libraries/add-library-dialog';
+import { routes } from '@/lib/routes';
 
 export default function AdminDashboardPage() {
   const { data: libraries, isLoading: loadingLibs } = useLibraries();
   const { data: allBooks, isLoading: loadingBooks } = useBooks({ limit: 1 });
+  const { data: usersData, isLoading: loadingUsers } = useAdminUsers();
   const scanLibrary = useScanLibrary();
 
   const stats = [
@@ -38,10 +41,11 @@ export default function AdminDashboardPage() {
     },
     {
       title: 'Users',
-      value: 1,
+      value: usersData?.items.length || 0,
       icon: Shield,
       color: 'text-purple-500',
       bg: 'bg-purple-500/10',
+      loading: loadingUsers,
     },
   ];
 
@@ -78,7 +82,7 @@ export default function AdminDashboardPage() {
                 </div>
               </CardHeader>
               <CardContent>
-                {loadingLibs || loadingBooks ? (
+                {stat.loading || loadingLibs || loadingBooks ? (
                   <Skeleton className="h-8 w-16" />
                 ) : (
                   <div className="text-2xl font-bold">{stat.value}</div>
@@ -95,7 +99,7 @@ export default function AdminDashboardPage() {
             <CardTitle>Libraries Overview</CardTitle>
             <div className="grid grid-cols-2 gap-2 sm:flex sm:items-center">
               <Button variant="outline" size="sm" asChild>
-                <Link href="/libraries">
+                <Link href={routes.libraries}>
                   <FolderOpen className="mr-1 h-4 w-4" />
                   Manage
                 </Link>

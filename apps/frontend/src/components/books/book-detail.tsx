@@ -21,6 +21,7 @@ import {
   User,
 } from 'lucide-react';
 import { formatDuration, formatDate, formatFileSize, getProgressPercent } from '@/lib/utils';
+import { routes } from '@/lib/routes';
 
 interface BookDetailProps {
   bookId: string;
@@ -124,13 +125,13 @@ export function BookDetail({ bookId }: BookDetailProps) {
 
           <div className="grid gap-2 sm:flex sm:flex-wrap">
             {book.has_ebook && (
-              <Button className="w-full sm:w-auto" onClick={() => router.push(`/books/${bookId}/read`)}>
+              <Button className="w-full sm:w-auto" onClick={() => router.push(routes.bookRead(bookId))}>
                 <BookOpen className="mr-2 h-4 w-4" />
                 {progress && progress.progress > 0 ? 'Continue Reading' : 'Read Online'}
               </Button>
             )}
             {book.has_audiobook && (
-              <Button className="w-full sm:w-auto" onClick={() => router.push(`/books/${bookId}/listen`)}>
+              <Button className="w-full sm:w-auto" onClick={() => router.push(routes.bookListen(bookId))}>
                 <Headphones className="mr-2 h-4 w-4" />
                 {progress && progress.progress > 0 ? 'Continue Listening' : 'Listen'}
               </Button>

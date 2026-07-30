@@ -51,6 +51,8 @@ services:
     build:
       context: ./apps/backend
       dockerfile: Dockerfile
+      args:
+        TORCH_INDEX_URL: https://download.pytorch.org/whl/cu124
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-todds}:${POSTGRES_PASSWORD:-todds_secret}@postgres:5432/${POSTGRES_DB:-todds_library}
       REDIS_URL: redis://redis:6379/0
@@ -64,8 +66,12 @@ services:
       COVERS_DIR: /data/covers
       SECRET_KEY: ${SECRET_KEY:-change_me_in_production}
       PORT: 8000
+      PYTHONUNBUFFERED: "1"
       UVICORN_WORKERS: ${UVICORN_WORKERS:-1}
-      ASR_MODEL_ID: openai/whisper-small
+      ASR_MODEL_ID: small
+      ASR_DEVICE: cuda
+      ASR_GPU_INDEX: 0
+      ASR_COMPUTE_TYPE: float32
       ASR_MODELS_DIR: /data/asr_models
     volumes:
       - /mnt/2tb_jellyfin/Books:/books
@@ -84,6 +90,13 @@ services:
       meilisearch:
         condition: service_healthy
     restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0", "1"]
+              capabilities: [gpu]
 
   rreading-glasses-db:
     image: postgres:17-alpine

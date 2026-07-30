@@ -6,6 +6,7 @@ import { EpubReader } from '@/components/reader/epub-reader';
 import { PdfReader } from '@/components/reader/pdf-reader';
 import { Button } from '@/components/ui/button';
 import { ArrowLeft } from 'lucide-react';
+import { routes } from '@/lib/routes';
 
 export default function ReadPage() {
   const params = useParams();
@@ -35,7 +36,7 @@ export default function ReadPage() {
   const isPdf = (book.ebook_format || book.format)?.toLowerCase() === 'pdf';
 
   if (!book.has_ebook && book.has_audiobook) {
-    router.replace(`/books/${id}/listen`);
+    router.replace(routes.bookListen(id));
     return null;
   }
 

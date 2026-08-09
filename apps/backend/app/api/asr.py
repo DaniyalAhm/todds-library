@@ -177,7 +177,7 @@ async def transcribe_chapter_endpoint(
         audio_source_count=_audio_source_count(book),
         chapter_count=len(book.chapters or []),
         audio_path=audio_path,
-        duration_sec=book.duration,
+        duration_sec=asr_service.probe_audio_duration(audio_path),
     )
     chunk_progress = _chunk_progress_logger(db, book, chapter, book_title) if use_chunked else None
     start_message = (
@@ -201,7 +201,7 @@ async def transcribe_chapter_endpoint(
                     tc["batch_size"],
                     tc["chunk_length_s"],
                     tc["vad_filter"],
-                    book.duration,
+                    asr_service.probe_audio_duration(audio_path),
                     progress_callback=chunk_progress,
                 )
                 if use_chunked

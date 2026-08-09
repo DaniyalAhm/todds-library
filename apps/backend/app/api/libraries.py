@@ -254,7 +254,7 @@ async def _auto_generate_for_books(book_ids: list[UUID], language: str) -> None:
                         audio_source_count=_audio_source_count(audio_files),
                         chapter_count=len(chapters_list),
                         audio_path=audio_path,
-                        duration_sec=book.duration,
+                        duration_sec=asr_service.probe_audio_duration(audio_path),
                     )
                     chunk_progress = _chunk_progress_logger(db, book, chapter, book_title) if use_chunked else None
                     if use_chunked:
@@ -279,7 +279,7 @@ async def _auto_generate_for_books(book_ids: list[UUID], language: str) -> None:
                                     batch_size,
                                     chunk_length_s,
                                     vad_filter,
-                                    book.duration,
+                                    asr_service.probe_audio_duration(audio_path),
                                     progress_callback=chunk_progress,
                                 )
                                 if use_chunked

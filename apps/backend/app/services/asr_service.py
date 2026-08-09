@@ -107,6 +107,83 @@ def _format_srt_time(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 
+LEADING_ZERO_SAMPLE_BYTES = 64 * 1024
+LEADING_ZERO_THRESHOLD_BYTES = 256
+
+
+def has_leading_zero_padding(
+    audio_path: str,
+    sample_bytes: int = LEADING_ZERO_SAMPLE_BYTES,
+    threshold: int = LEADING_ZERO_THRESHOLD_BYTES,
+) -> bool:
+    try:
+        with open(audio_path, "rb") as f:
+            head = f.read(sample_bytes)
+    except OSError:
+        return False
+    zero_run = 0
+    for byte in head:
+        if byte == 0:
+            zero_run += 1
+        else:
+            break
+    return zero_run >= threshold
+
+
+def sanitize_audio_to_wav(audio_path: str) -> str | None:
+    if not shutil.which("ffmpeg"):
+        return None
+
+    fd, tmp_path = tempfile.mkstemp(prefix="todds-library-sanitized-", suffix=".wav", dir="/tmp")
+    os.close(fd)
+    try:
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-v",
+                "error",
+                "-err_detect",
+                "ignore_err",
+                "-i",
+                audio_path,
+                "-vn",
+                "-ac",
+                "1",
+                "-ar",
+                "16000",
+                "-f",
+                "wav",
+                tmp_path,
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=3600,
+        )
+        if not _has_real_audio_data(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except FileNotFoundError:
+                pass
+            return None
+        return tmp_path
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except FileNotFoundError:
+            pass
+        return None
+
+
+def _has_real_audio_data(wav_path: str) -> bool:
+    try:
+        size = os.path.getsize(wav_path)
+        return size > 1024
+    except OSError:
+        return False
+
+
 def probe_audio_duration(audio_path: str) -> float | None:
     if not shutil.which("ffprobe"):
         return None
@@ -146,9 +223,6 @@ def should_use_chunked_transcription(
     duration_sec: float | None,
     threshold_sec: int = LONG_SOURCE_CHUNK_SECONDS,
 ) -> bool:
-    if audio_source_count != 1 or chapter_count != 1:
-        return False
-
     duration = duration_sec if duration_sec and duration_sec > 0 else probe_audio_duration(audio_path)
     return bool(duration and duration > threshold_sec)
 
@@ -283,30 +357,49 @@ def transcribe(
     vad_filter: bool = False,
 ) -> TranscriptionResult:
     model = _get_model_pipeline()
-    result = _transcribe_source(model, audio_path, language, batch_size, chunk_length_s, vad_filter)
 
-    duration_sec = probe_audio_duration(audio_path)
-    coverage = _result_coverage(result, duration_sec)
-    if coverage < _COVERAGE_THRESHOLD:
-        fallback = _retranscribe_via_ffmpeg(
-            model,
-            audio_path,
-            duration_sec,
-            language,
-            batch_size,
-            chunk_length_s,
-            vad_filter,
-            previous_coverage=coverage,
+    sanitized_path = None
+    if has_leading_zero_padding(audio_path):
+        logger.warning(
+            "Detected leading zero-byte padding in %s; sanitizing through ffmpeg before transcription",
+            os.path.basename(audio_path),
         )
-        if fallback is not None:
-            result = fallback
+        sanitized_path = sanitize_audio_to_wav(audio_path)
+        if sanitized_path is not None:
+            audio_path = sanitized_path
 
-    if result.word_count == 0:
-        raise ASRError(
-            f"Transcription produced no words for {os.path.basename(audio_path)}"
-        )
+    try:
+        result = _transcribe_source(model, audio_path, language, batch_size, chunk_length_s, vad_filter)
 
-    return result
+        duration_sec = probe_audio_duration(audio_path)
+        if sanitized_path is None:
+            coverage = _result_coverage(result, duration_sec)
+            if coverage < _COVERAGE_THRESHOLD:
+                fallback = _retranscribe_via_ffmpeg(
+                    model,
+                    audio_path,
+                    duration_sec,
+                    language,
+                    batch_size,
+                    chunk_length_s,
+                    vad_filter,
+                    previous_coverage=coverage,
+                )
+                if fallback is not None:
+                    result = fallback
+
+        if result.word_count == 0:
+            raise ASRError(
+                f"Transcription produced no words for {os.path.basename(audio_path)}"
+            )
+
+        return result
+    finally:
+        if sanitized_path is not None:
+            try:
+                os.unlink(sanitized_path)
+            except FileNotFoundError:
+                pass
 
 
 def _transcribe_source(
@@ -517,53 +610,103 @@ def transcribe_full_source(
         duration,
     )
 
-    for zero_based_index in range(total_chunks):
-        chunk_number = zero_based_index + 1
-        start_sec = zero_based_index * chunk_duration_s
-        end_sec = min(duration, start_sec + chunk_duration_s)
-        partial_path = partial_dir / f"chunk_{chunk_number:06d}.json" if partial_dir else None
+    chunk_source = audio_path
+    sanitized_path = None
 
-        try:
-            if partial_path is not None and partial_path.exists():
-                chunk_data = _load_chunk_partial(partial_path)
-                logger.info(
-                    "Skipping completed chunk %s/%s",
-                    chunk_number,
-                    total_chunks,
-                )
-            else:
-                tmp_path = _extract_audio_chunk(audio_path, start_sec, end_sec - start_sec)
-                try:
-                    chunk_result = transcribe(
-                        tmp_path,
-                        language,
-                        batch_size,
-                        chunk_length_s,
-                        vad_filter,
+    try:
+        for zero_based_index in range(total_chunks):
+            chunk_number = zero_based_index + 1
+            start_sec = zero_based_index * chunk_duration_s
+            end_sec = min(duration, start_sec + chunk_duration_s)
+            partial_path = partial_dir / f"chunk_{chunk_number:06d}.json" if partial_dir else None
+
+            try:
+                if partial_path is not None and partial_path.exists():
+                    chunk_data = _load_chunk_partial(partial_path)
+                    logger.info(
+                        "Skipping completed chunk %s/%s",
+                        chunk_number,
+                        total_chunks,
                     )
-                    chunk_data = {
-                        "chunk_index": chunk_number,
-                        "start_sec": start_sec,
-                        "end_sec": end_sec,
-                        "language": chunk_result.language,
-                        "text": chunk_result.text,
-                        "segments": _offset_segments(chunk_result.segments, start_sec),
-                    }
-                    if partial_path is not None:
-                        _write_chunk_partial(partial_path, chunk_data)
-                finally:
+                else:
+                    tmp_path = None
                     try:
-                        os.unlink(tmp_path)
-                    except FileNotFoundError:
-                        pass
+                        tmp_path = _extract_audio_chunk(chunk_source, start_sec, end_sec - start_sec)
+                    except ASRError as exc:
+                        if sanitized_path is None:
+                            sanitized_path = _sanitize_chunk_source(audio_path)
+                            if sanitized_path is not None:
+                                chunk_source = sanitized_path
+                                logger.warning(
+                                    "Fast-seek extraction failed for %s; re-chunking sanitized copy",
+                                    os.path.basename(audio_path),
+                                )
+                                tmp_path = _extract_audio_chunk(chunk_source, start_sec, end_sec - start_sec)
+                        if tmp_path is None:
+                            logger.warning(
+                                "Skipping undecodable chunk %s/%s of %s: %s",
+                                chunk_number,
+                                total_chunks,
+                                os.path.basename(audio_path),
+                                exc,
+                            )
+                            continue
+                    try:
+                        chunk_result = transcribe(
+                            tmp_path,
+                            language,
+                            batch_size,
+                            chunk_length_s,
+                            vad_filter,
+                        )
+                        chunk_data = {
+                            "chunk_index": chunk_number,
+                            "start_sec": start_sec,
+                            "end_sec": end_sec,
+                            "language": chunk_result.language,
+                            "text": chunk_result.text,
+                            "segments": _offset_segments(chunk_result.segments, start_sec),
+                        }
+                        if partial_path is not None:
+                            _write_chunk_partial(partial_path, chunk_data)
+                    finally:
+                        try:
+                            os.unlink(tmp_path)
+                        except FileNotFoundError:
+                            pass
 
-            chunk_results.append(chunk_data)
-            if progress_callback is not None:
-                progress_callback(chunk_number, total_chunks, start_sec, end_sec)
-        except Exception as exc:
-            raise ASRError(f"Chunk {chunk_number}/{total_chunks} failed: {exc}") from exc
+                chunk_results.append(chunk_data)
+                if progress_callback is not None:
+                    progress_callback(chunk_number, total_chunks, start_sec, end_sec)
+            except Exception as exc:
+                raise ASRError(f"Chunk {chunk_number}/{total_chunks} failed: {exc}") from exc
+    finally:
+        if sanitized_path is not None:
+            try:
+                os.unlink(sanitized_path)
+            except FileNotFoundError:
+                pass
+
+    if not chunk_results:
+        raise ASRError(
+            f"No decodable audio found in {os.path.basename(audio_path)}"
+        )
 
     return _stitch_chunk_results(chunk_results, language)
+
+
+def _sanitize_chunk_source(audio_path: str) -> str | None:
+    sanitized = sanitize_audio_to_wav(audio_path)
+    if sanitized is None:
+        return None
+    duration = probe_audio_duration(sanitized)
+    if not duration or duration <= 0:
+        try:
+            os.unlink(sanitized)
+        except FileNotFoundError:
+            pass
+        return None
+    return sanitized
 
 
 def _extract_audio_chunk(audio_path: str, start_sec: float, duration_sec: float) -> str:
@@ -579,6 +722,8 @@ def _extract_audio_chunk(audio_path: str, start_sec: float, duration_sec: float)
                 "-y",
                 "-v",
                 "error",
+                "-err_detect",
+                "ignore_err",
                 "-ss",
                 f"{start_sec:.3f}",
                 "-t",
@@ -594,10 +739,16 @@ def _extract_audio_chunk(audio_path: str, start_sec: float, duration_sec: float)
                 "wav",
                 tmp_path,
             ],
-            check=True,
+            check=False,
             capture_output=True,
             text=True,
+            timeout=3600,
         )
+        if not _has_real_audio_data(tmp_path):
+            raise ASRError(
+                f"No decodable audio found in {os.path.basename(audio_path)} "
+                f"at {start_sec:.1f}s-{start_sec + duration_sec:.1f}s"
+            )
         return tmp_path
     except Exception:
         try:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 import json
 from types import SimpleNamespace
@@ -409,3 +410,230 @@ def test_transcribe_raises_when_no_words_after_fallback(monkeypatch, tmp_path) -
     with pytest.raises(asr_service.ASRError, match="no words"):
         asr_service.transcribe("/books/empty.mp3")
     assert not wav_path.exists()
+
+
+def test_has_leading_zero_padding_detects_padded_files(tmp_path) -> None:
+    padded = tmp_path / "padded.mp3"
+    padded.write_bytes(b"\x00" * 4096 + b"ID3" + b"\x00" * 100)
+    assert asr_service.has_leading_zero_padding(str(padded)) is True
+
+    clean = tmp_path / "clean.mp3"
+    clean.write_bytes(b"ID3" + b"\x00" * 100)
+    assert asr_service.has_leading_zero_padding(str(clean)) is False
+
+    empty = tmp_path / "empty.mp3"
+    empty.write_bytes(b"")
+    assert asr_service.has_leading_zero_padding(str(empty)) is False
+
+
+def test_has_leading_zero_padding_missing_file(tmp_path) -> None:
+    assert asr_service.has_leading_zero_padding(str(tmp_path / "nope.mp3")) is False
+
+
+def test_transcribe_sanitizes_zero_padded_source(monkeypatch, tmp_path) -> None:
+    padded_source = tmp_path / "padded.mp3"
+    padded_source.write_bytes(b"\x00" * 4096 + b"ID3" + b"\x00" * 100)
+
+    calls = []
+
+    class FakeModel:
+        def transcribe(self, audio_path: str, **kwargs):
+            calls.append(audio_path)
+            return (
+                iter(
+                    [
+                        _seg(0.0, 5.0, "recovered"),
+                    ]
+                ),
+                SimpleNamespace(language="en"),
+            )
+
+    monkeypatch.setattr(asr_service, "_get_model_pipeline", lambda: FakeModel())
+    monkeypatch.setattr(asr_service, "probe_audio_duration", lambda _path: 5.0)
+
+    sanitized_wav = tmp_path / "sanitized.wav"
+    sanitized_wav.write_bytes(b"RIFF" + b"\x00" * 1024)
+
+    monkeypatch.setattr(asr_service, "sanitize_audio_to_wav", lambda _path: str(sanitized_wav))
+    monkeypatch.setattr(asr_service, "_retranscribe_via_ffmpeg", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not fall back")))
+
+    result = asr_service.transcribe(str(padded_source))
+
+    assert calls == [str(sanitized_wav)]
+    assert result.segments[0]["text"] == "recovered"
+    assert not sanitized_wav.exists()
+
+
+def test_transcribe_sanitize_failure_falls_through(monkeypatch, tmp_path) -> None:
+    calls = []
+
+    class FakeModel:
+        def transcribe(self, audio_path: str, **kwargs):
+            calls.append(audio_path)
+            return (
+                iter([_seg(0.0, 5.0, "raw")]),
+                SimpleNamespace(language="en"),
+            )
+
+    monkeypatch.setattr(asr_service, "_get_model_pipeline", lambda: FakeModel())
+    monkeypatch.setattr(asr_service, "probe_audio_duration", lambda _path: 5.0)
+    monkeypatch.setattr(asr_service, "sanitize_audio_to_wav", lambda _path: None)
+    monkeypatch.setattr(asr_service, "_retranscribe_via_ffmpeg", lambda *args, **kwargs: None)
+
+    result = asr_service.transcribe("/books/padded.mp3")
+
+    assert calls == ["/books/padded.mp3"]
+    assert result.segments[0]["text"] == "raw"
+
+
+def test_extract_audio_chunk_tolerates_partial_decode(monkeypatch, tmp_path) -> None:
+    import subprocess
+
+    def fake_run(cmd, **kwargs):
+        out_path = cmd[-1]
+        with open(out_path, "wb") as f:
+            f.write(b"RIFF" + b"\x00" * 4096)
+        return SimpleNamespace(returncode=69, stderr="", stdout="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    out = asr_service._extract_audio_chunk("/books/corrupt.m4b", 0.0, 1800.0)
+    assert out.startswith("/tmp/")
+    assert os.path.exists(out)
+    assert os.path.getsize(out) > 1024
+
+
+def test_extract_audio_chunk_raises_on_empty_output(monkeypatch, tmp_path) -> None:
+    import subprocess
+
+    def fake_run(cmd, **kwargs):
+        out_path = cmd[-1]
+        with open(out_path, "wb") as f:
+            f.write(b"RIFF")
+        return SimpleNamespace(returncode=69, stderr="", stdout="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    with pytest.raises(asr_service.ASRError, match="No decodable audio"):
+        asr_service._extract_audio_chunk("/books/corrupt.m4b", 1800.0, 1800.0)
+
+
+def test_chunked_transcription_skips_undecodable_chunks(monkeypatch, tmp_path) -> None:
+    calls = []
+
+    def fake_extract(_audio_path: str, start_sec: float, duration_sec: float) -> str:
+        calls.append((start_sec, duration_sec))
+        if start_sec == 0:
+            chunk_path = tmp_path / "chunk-0.wav"
+            chunk_path.write_text("audio", encoding="utf-8")
+            return str(chunk_path)
+        raise asr_service.ASRError("No decodable audio")
+
+    def fake_transcribe(_audio_path: str, *_args, **_kwargs) -> asr_service.TranscriptionResult:
+        return asr_service.TranscriptionResult(
+            text="Chunk",
+            language="en",
+            segments=[
+                {
+                    "start": 1.0,
+                    "end": 2.0,
+                    "text": " Chunk",
+                    "words": [{"start": 1.0, "end": 2.0, "text": "Chunk"}],
+                }
+            ],
+        )
+
+    monkeypatch.setattr(asr_service, "_extract_audio_chunk", fake_extract)
+    monkeypatch.setattr(asr_service, "transcribe", fake_transcribe)
+
+    result = asr_service.transcribe_full_source(
+        "/books/corrupt.m4b",
+        duration_sec=120.0,
+        chunk_duration_s=60,
+    )
+
+    assert calls == [(0, 60.0), (60, 60.0)]
+    assert result.segments[0]["start"] == 1.0
+    assert result.cue_count == 1
+
+
+def test_chunked_transcription_raises_when_no_chunks_decodable(monkeypatch, tmp_path) -> None:
+    def fake_extract(_audio_path: str, _start_sec: float, _duration_sec: float) -> str:
+        raise asr_service.ASRError("No decodable audio")
+
+    monkeypatch.setattr(asr_service, "_extract_audio_chunk", fake_extract)
+
+    with pytest.raises(asr_service.ASRError, match="No decodable audio"):
+        asr_service.transcribe_full_source(
+            "/books/corrupt.m4b",
+            duration_sec=120.0,
+            chunk_duration_s=60,
+        )
+
+
+def test_chunked_transcription_sanitizes_source_when_fast_seek_fails(monkeypatch, tmp_path) -> None:
+    sanitized_wav = tmp_path / "sanitized.wav"
+    sanitized_wav.write_bytes(b"RIFF" + b"\x00" * 2048)
+
+    extract_calls = []
+
+    def fake_extract(audio_path: str, start_sec: float, duration_sec: float) -> str:
+        extract_calls.append((audio_path, start_sec, duration_sec))
+        if audio_path == "/books/corrupt.m4b":
+            raise asr_service.ASRError("No decodable audio")
+        chunk_path = tmp_path / f"chunk-{int(start_sec)}.wav"
+        chunk_path.write_text("audio", encoding="utf-8")
+        return str(chunk_path)
+
+    def fake_sanitize(_audio_path: str) -> str:
+        return str(sanitized_wav)
+
+    def fake_transcribe(_audio_path: str, *_args, **_kwargs) -> asr_service.TranscriptionResult:
+        return asr_service.TranscriptionResult(
+            text="Chunk",
+            language="en",
+            segments=[
+                {
+                    "start": 1.0,
+                    "end": 2.0,
+                    "text": " Chunk",
+                    "words": [{"start": 1.0, "end": 2.0, "text": "Chunk"}],
+                }
+            ],
+        )
+
+    monkeypatch.setattr(asr_service, "_extract_audio_chunk", fake_extract)
+    monkeypatch.setattr(asr_service, "_sanitize_chunk_source", fake_sanitize)
+    monkeypatch.setattr(asr_service, "transcribe", fake_transcribe)
+
+    result = asr_service.transcribe_full_source(
+        "/books/corrupt.m4b",
+        duration_sec=120.0,
+        chunk_duration_s=60,
+    )
+
+    assert extract_calls == [
+        ("/books/corrupt.m4b", 0.0, 60.0),
+        (str(sanitized_wav), 0.0, 60.0),
+        (str(sanitized_wav), 60.0, 60.0),
+    ]
+    assert result.segments[0]["start"] == 1.0
+    assert result.segments[1]["start"] == 61.0
+    assert result.cue_count == 2
+    assert not sanitized_wav.exists()
+
+
+def test_should_use_chunked_transcription_allows_multitrack(monkeypatch) -> None:
+    assert asr_service.should_use_chunked_transcription(
+        audio_source_count=8,
+        chapter_count=8,
+        audio_path="/books/long.m4b",
+        duration_sec=7200.0,
+    ) is True
+
+    assert asr_service.should_use_chunked_transcription(
+        audio_source_count=8,
+        chapter_count=8,
+        audio_path="/books/short.m4b",
+        duration_sec=600.0,
+    ) is False

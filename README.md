@@ -8,7 +8,7 @@ Todds Library is a personal, self-hosted media manager for your book collection 
 It runs as a small Docker Compose stack: a Python **FastAPI** backend, a **Next.js** frontend, and supporting services (PostgreSQL, Redis, Meilisearch, and an optional Goodreads metadata mirror).
 
 
-![My Screenshot](screenshot.png)
+![My Screenshot](pasted_image.png)
 
 ---
 

@@ -5,6 +5,7 @@
 Todds Library is a personal, self-hosted media manager for your book collection — think "Jellyfin for books." It scans folders of ebooks and audiobooks, builds a browsable library with full-text search, streams audiobooks with HLS, renders ebooks in the browser, and uses **Faster-Whisper** to generate **word-level karaoke subtitles** and **auto-detect chapters** for audiobooks.
 
 It runs as a small Docker Compose stack: a Python **FastAPI** backend, a **Next.js** frontend, and supporting services (PostgreSQL, Redis, Meilisearch, and an optional Goodreads metadata mirror).
+![My Screenshot](screenshot.png)
 ---
 
 ## Table of Contents

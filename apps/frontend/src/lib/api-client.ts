@@ -12,17 +12,84 @@ interface RequestConfig {
   signal?: AbortSignal;
 }
 
-let sessionToken: string | null = null;
+let accessToken: string | null = null;
+let authSessionToken: string | null = null;
+let tokenKnown = false;
+let tokenWaiters: Array<() => void> = [];
+let unauthorizedHandler: (() => void) | null = null;
+let refreshInFlight: Promise<boolean> | null = null;
+const TOKEN_WAIT_TIMEOUT_MS = 5000;
+
+export function setAuthSession(access: string | null, session: string | null) {
+  accessToken = access;
+  authSessionToken = session;
+  tokenKnown = true;
+  const pending = tokenWaiters;
+  tokenWaiters = [];
+  pending.forEach((resolve) => resolve());
+}
 
 export function setSessionToken(token: string | null) {
-  sessionToken = token;
+  setAuthSession(token, authSessionToken);
+}
+
+export function setUnauthorizedHandler(handler: (() => void) | null) {
+  unauthorizedHandler = handler;
+}
+
+async function awaitSessionToken(): Promise<void> {
+  if (tokenKnown) return;
+  await new Promise<void>((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      tokenWaiters = tokenWaiters.filter((waiter) => waiter !== finish);
+      resolve();
+    };
+    const timer = setTimeout(finish, TOKEN_WAIT_TIMEOUT_MS);
+    tokenWaiters.push(finish);
+  });
 }
 
 export function getAuthHeaders(): Record<string, string> {
-  if (sessionToken) {
-    return { 'Authorization': `Bearer ${sessionToken}` };
+  if (accessToken) {
+    return { 'Authorization': `Bearer ${accessToken}` };
   }
   return {};
+}
+
+async function refreshSession(): Promise<boolean> {
+  if (!authSessionToken) return false;
+  if (refreshInFlight) return refreshInFlight;
+
+  refreshInFlight = (async () => {
+    try {
+      const response = await fetch(buildApiUrl('/auth/refresh').toString(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_token: authSessionToken }),
+      });
+      if (!response.ok) return false;
+      const data = (await response.json()) as {
+        access_token?: unknown;
+        session_token?: unknown;
+      };
+      if (typeof data.access_token !== 'string') return false;
+      accessToken = data.access_token;
+      if (typeof data.session_token === 'string') {
+        authSessionToken = data.session_token;
+      }
+      return true;
+    } catch {
+      return false;
+    } finally {
+      refreshInFlight = null;
+    }
+  })();
+
+  return refreshInFlight;
 }
 
 function getBaseUrl(): string {
@@ -61,6 +128,7 @@ async function request<T>(
   body?: unknown,
   config?: RequestConfig
 ): Promise<T> {
+  await awaitSessionToken();
   const url = buildApiUrl(path);
 
   if (config?.params) {
@@ -75,25 +143,38 @@ async function request<T>(
     ...config?.headers,
   };
 
-  if (sessionToken) {
-    headers['Authorization'] = `Bearer ${sessionToken}`;
+  if (accessToken) {
+    headers['Authorization'] = `Bearer ${accessToken}`;
   }
 
   if (body !== undefined && !(body instanceof FormData)) {
     headers['Content-Type'] = 'application/json';
   }
 
-  const response = await fetch(url.toString(), {
-    method,
-    headers,
-    body:
-      body instanceof FormData
-        ? body
-        : body !== undefined
-          ? JSON.stringify(body)
-          : undefined,
-    signal: config?.signal,
-  });
+  const doFetch = () =>
+    fetch(url.toString(), {
+      method,
+      headers,
+      body:
+        body instanceof FormData
+          ? body
+          : body !== undefined
+            ? JSON.stringify(body)
+            : undefined,
+      signal: config?.signal,
+    });
+
+  let response = await doFetch();
+
+  if (response.status === 401) {
+    const refreshed = await refreshSession();
+    if (refreshed) {
+      headers['Authorization'] = `Bearer ${accessToken}`;
+      response = await doFetch();
+    } else {
+      unauthorizedHandler?.();
+    }
+  }
 
   if (!response.ok) {
     let errorData: ApiError;

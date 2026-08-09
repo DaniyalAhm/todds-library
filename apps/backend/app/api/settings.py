@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import asyncio
 import logging
+import shutil
 import time
 from enum import Enum
 from pathlib import Path
@@ -23,8 +24,14 @@ from app.models.chapter import Chapter
 from app.models.subtitle import SubtitleMetadata
 from app.models.generation_log import GenerationLog
 from app.models.user import User
-from app.services import asr_service
+from app.services import asr_service, chapter_service
 from app.services.asr_service import ASRError, transcribe_chapter, transcribe_chapter_chunked
+from app.services.chapter_service import (
+    ChapterDetectionError,
+    DEFAULT_GAP_THRESHOLD_SEC,
+    apply_chapters_to_book,
+    detect_book_chapters_sync,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -38,6 +45,7 @@ class GenerationState(str, Enum):
     BULK_RUNNING = "bulk_running"
     AUTO_RUNNING = "auto_running"
     CANCELLING = "cancelling"
+    BULK_CHAPTERS_RUNNING = "bulk_chapters_running"
 
 
 _generation_state: GenerationState = GenerationState.IDLE
@@ -46,6 +54,7 @@ _ACTION_NAMES = {
     GenerationState.BULK_RUNNING: "start bulk generation",
     GenerationState.AUTO_RUNNING: "start auto generation",
     GenerationState.CANCELLING: "cancel generation",
+    GenerationState.BULK_CHAPTERS_RUNNING: "start bulk chapter detection",
 }
 
 
@@ -79,6 +88,7 @@ def _settings_response(db_settings: dict) -> dict:
         "batch_size": db_settings.get("batch_size", "1"),
         "chunk_length_s": db_settings.get("chunk_length_s", "30"),
         "vad_filter": db_settings.get("vad_filter", "false"),
+        "chapter_gap_threshold_sec": db_settings.get("chapter_gap_threshold_sec", "3.0"),
     }
 
 
@@ -103,7 +113,7 @@ async def update_settings(
     current_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    allowed_keys = {"asr_device", "asr_gpu_index", "asr_compute_type", "asr_model_id", "subtitle_gen_mode", "auto_gen_language", "batch_size", "chunk_length_s", "vad_filter"}
+    allowed_keys = {"asr_device", "asr_gpu_index", "asr_compute_type", "asr_model_id", "subtitle_gen_mode", "auto_gen_language", "batch_size", "chunk_length_s", "vad_filter", "chapter_gap_threshold_sec"}
     for key, value in body.root.items():
         if key not in allowed_keys:
             raise HTTPException(
@@ -148,6 +158,13 @@ async def update_settings(
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="chunk_length_s must be an integer 10-120")
         if key == "vad_filter" and value not in ("true", "false"):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="vad_filter must be 'true' or 'false'")
+        if key == "chapter_gap_threshold_sec":
+            try:
+                v = float(value)
+                if v <= 0:
+                    raise ValueError
+            except ValueError:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="chapter_gap_threshold_sec must be a positive number")
 
     for key, value in body.root.items():
         existing = await db.execute(
@@ -198,6 +215,16 @@ async def generate_all_subtitles(
     return {"status": "started", "message": "Subtitle generation started in the background", "running": True}
 
 
+@router.post("/settings/generate-all-chapters")
+async def generate_all_chapters(
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(require_admin),
+):
+    _set_state(GenerationState.BULK_CHAPTERS_RUNNING, GenerationState.IDLE)
+    background_tasks.add_task(_generate_all_chapters_bg)
+    return {"status": "started", "message": "Chapter detection started in the background", "running": True}
+
+
 @router.post("/settings/cancel-generation")
 async def cancel_generation(
     current_user: User = Depends(require_admin),
@@ -206,6 +233,7 @@ async def cancel_generation(
         GenerationState.CANCELLING,
         GenerationState.BULK_RUNNING,
         GenerationState.AUTO_RUNNING,
+        GenerationState.BULK_CHAPTERS_RUNNING,
     )
     return {"status": "cancelling", "message": "Generation will stop after the current chapter", "running": True}
 
@@ -279,6 +307,12 @@ def _format_range_time(seconds: float) -> str:
     m = (total_seconds % 3600) // 60
     s = total_seconds % 60
     return f"{h:02d}:{m:02d}:{s:02d}"
+
+
+def _clear_chapter_partials(subtitles_dir: Path, chapter_index: int) -> None:
+    partial_dir = Path(subtitles_dir) / ".partials" / f"chapter_{chapter_index:04d}"
+    if partial_dir.exists():
+        shutil.rmtree(partial_dir, ignore_errors=True)
 
 
 def _audio_source_count(audio_files: list[str]) -> int:
@@ -565,6 +599,112 @@ async def _generate_all_subtitles_bg() -> None:
             logger.exception("Bulk generation crashed")
         finally:
             logger.info("Bulk generation finished")
+            _generation_state = GenerationState.IDLE
+
+
+async def _generate_all_chapters_bg() -> None:
+    global _generation_state
+    async with AsyncSessionLocal() as db:
+        try:
+            try:
+                result = await db.execute(select(SystemSetting))
+                rows = result.scalars().all()
+                db_settings = {row.key: row.value for row in rows}
+                asr_service.apply_runtime_settings(db_settings)
+                language = None if db_settings.get("auto_gen_language", "auto") == "auto" else db_settings.get("auto_gen_language")
+                batch_size = int(db_settings.get("batch_size", "1"))
+                chunk_length_s = int(db_settings.get("chunk_length_s", "30"))
+                vad_filter = db_settings.get("vad_filter", "false") == "true"
+                try:
+                    gap_threshold_sec = float(db_settings.get("chapter_gap_threshold_sec", DEFAULT_GAP_THRESHOLD_SEC))
+                except (TypeError, ValueError):
+                    gap_threshold_sec = DEFAULT_GAP_THRESHOLD_SEC
+            except Exception:
+                logger.exception("Failed to load chapter detection settings; using defaults")
+                language = None
+                batch_size = 1
+                chunk_length_s = 30
+                vad_filter = False
+                gap_threshold_sec = DEFAULT_GAP_THRESHOLD_SEC
+
+            result = await db.execute(
+                select(Book)
+                .options(selectinload(Book.chapters))
+                .where(Book.file_format.in_(["mp3", "m4b", "flac", "ogg", "aac", "wma"]))
+            )
+            books = list(result.scalars().all())
+            total = len(books)
+            logger.info(
+                "Bulk chapter detection starting: books=%s gap_threshold_sec=%s",
+                total,
+                gap_threshold_sec,
+            )
+
+            for book_idx, book in enumerate(books, 1):
+                if _generation_state == GenerationState.CANCELLING:
+                    await _add_log(db, book.id, None, None, book.title or Path(book.file_path).stem, "cancelled", "Chapter detection cancelled by user")
+                    logger.info("Bulk chapter detection cancelled after book %s/%s", book_idx - 1, total)
+                    return
+
+                book_title = book.title or Path(book.file_path).stem
+                audio_files = (book.extra_metadata or {}).get("audio_files", [])
+                if len(audio_files) > 1:
+                    await _add_log(db, book.id, None, None, book_title, "skipped", "Multi-track audiobook already has per-track chapters")
+                    continue
+                if len(book.chapters or []) > 1:
+                    await _add_log(db, book.id, None, None, book_title, "skipped", "Already has chapters")
+                    continue
+
+                logger.info('Bulk chapter detection book %s/%s "%s"', book_idx, total, book_title)
+                subtitle_result = await db.execute(
+                    select(SubtitleMetadata)
+                    .where(
+                        SubtitleMetadata.book_id == book.id,
+                        SubtitleMetadata.status == "completed",
+                    )
+                    .order_by(SubtitleMetadata.cue_count.desc())
+                )
+                subtitle_candidates = [
+                    (row.json_path, row.cue_count)
+                    for row in subtitle_result.scalars().all()
+                    if row.json_path
+                ]
+                await _add_log(db, book.id, None, None, book_title, "started", "Detecting chapters from whisper timestamps...")
+                try:
+                    result = await _run_with_transcription_heartbeats(
+                        db,
+                        lambda: detect_book_chapters_sync(
+                            book,
+                            gap_threshold_sec=gap_threshold_sec,
+                            language=language,
+                            batch_size=batch_size,
+                            chunk_length_s=chunk_length_s,
+                            vad_filter=vad_filter,
+                            subtitle_candidates=subtitle_candidates,
+                        ),
+                        book_id=book.id,
+                        chapter_id=None,
+                        chapter_index=None,
+                        book_title=book_title,
+                    )
+                    await apply_chapters_to_book(
+                        db,
+                        book,
+                        result["chapters"],
+                        overwrite=False,
+                        duration=result["duration"],
+                    )
+                    await _add_log(db, book.id, None, None, book_title, "completed", f"Detected {len(result['chapters'])} chapters")
+                except ChapterDetectionError as e:
+                    await _add_log(db, book.id, None, None, book_title, "failed", str(e))
+                except (ASRError, Exception) as e:
+                    await _add_log(db, book.id, None, None, book_title, "failed", _generation_error_message(e, "Chapter detection failed"))
+                    logger.exception('Bulk chapter detection failed "%s"', book_title)
+        except Exception as e:
+            await _add_log(db, None, None, None, None, "failed", _generation_error_message(e, "Bulk chapter detection crashed"))
+            logger.exception("Bulk chapter detection crashed")
+        finally:
+            logger.info("Bulk chapter detection finished")
             _generation_state = GenerationState.IDLE
 
 

@@ -33,6 +33,84 @@ async def test_register_creates_first_user_as_admin(client, db_session):
     assert data["username"] == "admin"
     assert data["is_admin"] is True
     assert data["access_token"]
+    assert data["session_token"]
+
+
+@pytest.mark.asyncio
+async def test_refresh_with_session_token_keeps_session(client, db_session):
+    response = await client.post(
+        "/auth/refresh",
+        json={"session_token": "does-not-exist"},
+    )
+    assert response.status_code == 401
+
+    user = User(
+        username="refresh-user",
+        hashed_password=hash_password("secret"),
+        is_admin=False,
+    )
+    db_session.add(user)
+    await db_session.commit()
+    await db_session.refresh(user)
+
+    login = await client.post(
+        "/auth/login",
+        json={"username": "refresh-user", "password": "secret"},
+    )
+    assert login.status_code == 200
+    session_token = login.json()["session_token"]
+
+    refresh = await client.post(
+        "/auth/refresh",
+        json={"session_token": session_token},
+    )
+    assert refresh.status_code == 200
+    data = refresh.json()
+    assert data["access_token"]
+    assert data["user_id"] == str(user.id)
+    assert data["session_token"] == session_token
+
+    again = await client.post(
+        "/auth/refresh",
+        json={"session_token": session_token},
+    )
+    assert again.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_logout_revokes_session(client, db_session):
+    user = User(
+        username="logout-user",
+        hashed_password=hash_password("secret"),
+        is_admin=False,
+    )
+    db_session.add(user)
+    await db_session.commit()
+    await db_session.refresh(user)
+
+    login = await client.post(
+        "/auth/login",
+        json={"username": "logout-user", "password": "secret"},
+    )
+    session_token = login.json()["session_token"]
+
+    refresh = await client.post(
+        "/auth/refresh",
+        json={"session_token": session_token},
+    )
+    assert refresh.status_code == 200
+
+    logout = await client.post(
+        "/auth/logout",
+        json={"session_token": session_token},
+    )
+    assert logout.status_code == 200
+
+    after = await client.post(
+        "/auth/refresh",
+        json={"session_token": session_token},
+    )
+    assert after.status_code == 401
 
 
 @pytest.mark.asyncio

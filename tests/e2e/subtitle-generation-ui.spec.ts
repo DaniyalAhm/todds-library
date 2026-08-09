@@ -1,4 +1,13 @@
-import { test, expect, type Page, type Route } from '@playwright/test';
+import { test, expect, type BrowserContext, type Page, type Route } from '@playwright/test';
+import { createRequire } from 'node:module';
+
+const frontendRequire = createRequire(`${process.cwd()}/apps/frontend/package.json`);
+const { encode } = frontendRequire('next-auth/jwt') as {
+  encode: (params: { secret: string; token: Record<string, unknown>; maxAge: number }) => Promise<string>;
+};
+
+const FRONTEND_URL = process.env.E2E_BASE_URL || 'http://localhost:3330';
+const NEXTAUTH_SECRET = process.env.NEXTAUTH_SECRET || 'change_me_in_production';
 
 const book = {
   id: '00000000-0000-4000-8000-000000000101',
@@ -32,9 +41,9 @@ const book = {
   ],
 };
 
-test('audiobook player generates subtitles for the current chapter', async ({ page }) => {
+test('audiobook player generates subtitles for the current chapter', async ({ browser }) => {
   const requests: Array<{ path: string; method: string }> = [];
-  await mockBackend(page, requests);
+  const { page } = await setupContext(browser, requests);
 
   await page.goto(`/books/${book.id}/listen`);
   await expect(page.getByRole('heading', { name: book.title, level: 1 })).toBeVisible();
@@ -51,9 +60,9 @@ test('audiobook player generates subtitles for the current chapter', async ({ pa
   await expect(page.getByText('Subtitles generated')).toBeVisible();
 });
 
-test('audiobook player highlights active subtitle words from JSON subtitles', async ({ page }) => {
+test('audiobook player highlights active subtitle words from JSON subtitles', async ({ browser }) => {
   const requests: Array<{ path: string; method: string }> = [];
-  await mockBackend(page, requests);
+  const { page } = await setupContext(browser, requests);
 
   await page.goto(`/books/${book.id}/listen`);
 
@@ -67,9 +76,9 @@ test('audiobook player highlights active subtitle words from JSON subtitles', as
   await expect(page.getByText('Generated subtitle text')).toHaveCount(0);
 });
 
-test('audiobook player falls back to SRT subtitles when JSON is unavailable', async ({ page }) => {
+test('audiobook player falls back to SRT subtitles when JSON is unavailable', async ({ browser }) => {
   const requests: Array<{ path: string; method: string }> = [];
-  await mockBackend(page, requests, { jsonSubtitles: false });
+  const { page } = await setupContext(browser, requests, { jsonSubtitles: false });
 
   await page.goto(`/books/${book.id}/listen`);
 
@@ -81,6 +90,44 @@ test('audiobook player falls back to SRT subtitles when JSON is unavailable', as
     )
   ).toBe(true);
 });
+
+async function setupContext(
+  browser: import('@playwright/test').Browser,
+  requests: Array<{ path: string; method: string }>,
+  options: { jsonSubtitles?: boolean } = {}
+): Promise<{ page: Page; context: BrowserContext }> {
+  const context = await browser.newContext();
+  await seedSession(context);
+  const page = await context.newPage();
+  await mockBackend(page, requests, options);
+  return { page, context };
+}
+
+async function seedSession(context: BrowserContext) {
+  const sessionToken = await encode({
+    secret: NEXTAUTH_SECRET,
+    token: {
+      sub: '00000000-0000-4000-8000-000000000001',
+      id: '00000000-0000-4000-8000-000000000001',
+      name: 'mock-user',
+      email: 'mock@example.local',
+      isAdmin: false,
+      accessToken: 'mock-access-token',
+    },
+    maxAge: 24 * 60 * 60,
+  });
+
+  await context.addCookies([
+    {
+      name: 'next-auth.session-token',
+      value: sessionToken,
+      url: FRONTEND_URL,
+      httpOnly: true,
+      sameSite: 'Lax',
+      secure: false,
+    },
+  ]);
+}
 
 async function mockBackend(
   page: Page,

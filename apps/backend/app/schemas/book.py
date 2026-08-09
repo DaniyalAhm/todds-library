@@ -11,6 +11,7 @@ class ChapterResponse(BaseModel):
     index: int
     title: str
     start_position: float | None = None
+    end_position: float | None = None
 
     model_config = {"from_attributes": True}
 

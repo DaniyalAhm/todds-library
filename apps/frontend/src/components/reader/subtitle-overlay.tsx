@@ -23,9 +23,10 @@ interface SubtitleOverlayProps {
 }
 
 const WORD_HIGHLIGHT_GRACE_SECONDS = 0.12;
-const FULLSCREEN_TARGET_WORDS = 220;
-const FULLSCREEN_MAX_CUES = 30;
-const FULLSCREEN_PARAGRAPH_WORDS = 85;
+const FULLSCREEN_PAGE_LEAD_SECONDS = 1;
+const FULLSCREEN_TARGET_WORDS = 120;
+const FULLSCREEN_MAX_CUES = 18;
+const FULLSCREEN_PARAGRAPH_WORDS = 60;
 const FULLSCREEN_PARAGRAPH_GAP_SECONDS = 2.5;
 
 export function SubtitleOverlay({
@@ -41,7 +42,9 @@ export function SubtitleOverlay({
   );
 
   if (mode === 'fullscreen') {
-    const pageCues = getFullscreenPageCues(cues, currentTime);
+    const fullscreenPageTime = currentTime + FULLSCREEN_PAGE_LEAD_SECONDS;
+    const page = getFullscreenPage(cues, fullscreenPageTime);
+    const pageCues = page?.cues ?? [];
     if (pageCues.length === 0) return null;
     const paragraphs = groupFullscreenParagraphs(pageCues);
 
@@ -52,15 +55,21 @@ export function SubtitleOverlay({
           className
         )}
       >
-        <div className="max-h-full w-full max-w-5xl overflow-hidden text-left text-xl font-medium leading-9 text-white/70 sm:text-2xl sm:leading-10 lg:text-3xl lg:leading-[3.4rem]">
+        <div
+          key={page?.key}
+          className="max-h-full w-full max-w-5xl animate-[subtitle-page-flip_260ms_ease-out] overflow-hidden break-words text-left text-xl font-medium leading-9 text-white/70 [overflow-wrap:anywhere] sm:text-2xl sm:leading-10 lg:text-3xl lg:leading-[3.4rem]"
+        >
           {paragraphs.map((paragraph, paragraphIndex) => (
             <p key={paragraphIndex} className="mb-7 last:mb-0">
               {paragraph.map((cue, cueIndex) => (
-                <span key={`${cue.start}-${cueIndex}`}>
+                <span
+                  key={`${cue.start}-${cueIndex}`}
+                  data-fullscreen-cue-active={isCueActive(cue, fullscreenPageTime) ? 'true' : undefined}
+                >
                   <SubtitleCueText
                     cue={cue}
                     currentTime={currentTime}
-                    activeClassName="rounded bg-white px-1 text-black shadow-sm"
+                    activeClassName="rounded bg-white px-1 text-black shadow-sm box-decoration-clone"
                     cueActiveClassName="text-white"
                   />
                   {cueIndex < paragraph.length - 1 ? ' ' : ''}
@@ -184,40 +193,64 @@ function SubtitleCueText({
   );
 }
 
-function getFullscreenPageCues(cues: SubtitleCue[], currentTime: number): SubtitleCue[] {
-  if (cues.length === 0) return [];
+function getFullscreenPage(cues: SubtitleCue[], currentTime: number): { cues: SubtitleCue[]; key: string } | null {
+  if (cues.length === 0) return null;
 
-  let centerIndex = cues.findIndex(
-    (cue) =>
-      currentTime >= cue.start - WORD_HIGHLIGHT_GRACE_SECONDS &&
-      currentTime <= cue.end + WORD_HIGHLIGHT_GRACE_SECONDS
+  const pages = getFullscreenPages(cues);
+  if (pages.length === 0) return null;
+
+  let pageIndex = pages.findIndex((page) =>
+    page.some((cue) => isCueActive(cue, currentTime))
   );
 
-  if (centerIndex < 0) {
-    centerIndex = cues.findIndex((cue) => cue.end >= currentTime);
-    if (centerIndex < 0) centerIndex = cues.length - 1;
+  if (pageIndex < 0) {
+    pageIndex = pages.findIndex((page) => page[page.length - 1]?.end >= currentTime);
+    if (pageIndex < 0) pageIndex = pages.length - 1;
   }
 
-  let start = centerIndex;
-  let end = centerIndex;
-  let includeBefore = true;
+  const pageCues = pages[pageIndex];
+  const firstCue = pageCues[0];
+  const lastCue = pageCues[pageCues.length - 1];
 
-  while (
-    countCueWords(cues.slice(start, end + 1)) < FULLSCREEN_TARGET_WORDS &&
-    end - start + 1 < FULLSCREEN_MAX_CUES &&
-    (start > 0 || end < cues.length - 1)
-  ) {
-    if (includeBefore && start > 0) {
-      start -= 1;
-    } else if (end < cues.length - 1) {
-      end += 1;
-    } else if (start > 0) {
-      start -= 1;
+  return {
+    cues: pageCues,
+    key: `${pageIndex}-${firstCue.start}-${lastCue.end}`,
+  };
+}
+
+function getFullscreenPages(cues: SubtitleCue[]): SubtitleCue[][] {
+  const pages: SubtitleCue[][] = [];
+  let current: SubtitleCue[] = [];
+  let currentWords = 0;
+
+  for (const cue of cues) {
+    const cueWords = countCueWords([cue]);
+    const shouldStartPage =
+      current.length > 0 &&
+      (currentWords + cueWords > FULLSCREEN_TARGET_WORDS || current.length >= FULLSCREEN_MAX_CUES);
+
+    if (shouldStartPage) {
+      pages.push(current);
+      current = [];
+      currentWords = 0;
     }
-    includeBefore = !includeBefore;
+
+    current.push(cue);
+    currentWords += cueWords;
   }
 
-  return cues.slice(start, end + 1);
+  if (current.length > 0) {
+    pages.push(current);
+  }
+
+  return pages;
+}
+
+function isCueActive(cue: SubtitleCue, currentTime: number, startGraceSeconds = WORD_HIGHLIGHT_GRACE_SECONDS): boolean {
+  return (
+    currentTime >= cue.start - startGraceSeconds &&
+    currentTime <= cue.end + WORD_HIGHLIGHT_GRACE_SECONDS
+  );
 }
 
 function groupFullscreenParagraphs(cues: SubtitleCue[]): SubtitleCue[][] {

@@ -6,6 +6,7 @@ from typing import AsyncGenerator
 
 import pytest
 import pytest_asyncio
+import fakeredis.aioredis
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete
@@ -16,11 +17,14 @@ from app.dependencies import get_db
 from app.models.book import Book
 from app.models.bookmark import Bookmark
 from app.models.chapter import Chapter
+from app.models.generation_log import GenerationLog
 from app.models.metadata_cache import MetadataCache
 from app.models.progress import ReadingProgress
 from app.models.library import Library, LibraryType
+from app.models.subtitle import SubtitleMetadata
 from app.models.user import User
 from app.services.auth_service import create_user_jwt
+from app.services import session_service
 
 TEST_DATABASE_URL = "sqlite+aiosqlite:///./test.db"
 
@@ -50,6 +54,8 @@ async def db_session(engine) -> AsyncGenerator[AsyncSession, None]:
     )
     async with session_factory() as session:
         for model in (
+            SubtitleMetadata,
+            GenerationLog,
             Bookmark,
             ReadingProgress,
             Chapter,
@@ -94,7 +100,18 @@ async def test_library(db_session: AsyncSession, test_user: User) -> Library:
 
 
 @pytest_asyncio.fixture
-async def client(engine, db_session: AsyncSession, test_user: User) -> AsyncGenerator[AsyncClient, None]:
+async def redis_client():
+    client = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    session_service.set_redis_client(client)
+    yield client
+    await client.aclose()
+    session_service.set_redis_client(None)
+
+
+@pytest_asyncio.fixture
+async def client(
+    engine, db_session: AsyncSession, test_user: User, redis_client
+) -> AsyncGenerator[AsyncClient, None]:
     app = FastAPI()
 
     from app.api.router import router

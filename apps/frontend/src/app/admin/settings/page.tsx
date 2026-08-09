@@ -5,8 +5,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Badge } from '@/components/ui/badge';
-import { useSystemSettings, useUpdateSystemSettings, useGenerateAllSubtitles, useCancelGeneration, useGenerationLogs, type GenerationLogEntry } from '@/hooks/use-settings';
-import { Cpu, Save, CheckCircle2, XCircle, HardDrive, FileAudio, Loader2, ScrollText, Square } from 'lucide-react';
+import { useSystemSettings, useUpdateSystemSettings, useGenerateAllSubtitles, useGenerateAllChapters, useCancelGeneration, useGenerationLogs, type GenerationLogEntry } from '@/hooks/use-settings';
+import { Cpu, Save, CheckCircle2, XCircle, HardDrive, FileAudio, ListTree, Loader2, ScrollText, Square } from 'lucide-react';
 
 const ASR_MODELS = [
   { value: 'tiny', label: 'Faster-Whisper Tiny' },
@@ -74,6 +74,7 @@ export default function SettingsPage() {
   const { data, isLoading, isError } = useSystemSettings();
   const updateSettings = useUpdateSystemSettings();
   const generateAll = useGenerateAllSubtitles();
+  const generateAllChapters = useGenerateAllChapters();
   const cancelGeneration = useCancelGeneration();
   const { data: logsData } = useGenerationLogs();
   const logEndRef = useRef<HTMLDivElement>(null);
@@ -87,6 +88,7 @@ export default function SettingsPage() {
   const [batchSize, setBatchSize] = useState('1');
   const [chunkLengthS, setChunkLengthS] = useState('30');
   const [vadFilter, setVadFilter] = useState('false');
+  const [chapterGapThreshold, setChapterGapThreshold] = useState('3.0');
   const [dirty, setDirty] = useState(false);
 
   useEffect(() => {
@@ -100,6 +102,7 @@ export default function SettingsPage() {
       setBatchSize(data.settings.batch_size);
       setChunkLengthS(data.settings.chunk_length_s);
       setVadFilter(data.settings.vad_filter);
+      setChapterGapThreshold(data.settings.chapter_gap_threshold_sec);
     }
   }, [data]);
 
@@ -118,6 +121,7 @@ export default function SettingsPage() {
       batch_size: batchSize,
       chunk_length_s: chunkLengthS,
       vad_filter: vadFilter,
+      chapter_gap_threshold_sec: chapterGapThreshold,
     });
     setDirty(false);
   };
@@ -353,6 +357,21 @@ export default function SettingsPage() {
                 </p>
               </div>
 
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-foreground">Chapter Gap Threshold (seconds)</label>
+                <input
+                  type="number"
+                  min={0.1}
+                  step={0.5}
+                  value={chapterGapThreshold}
+                  onChange={(e) => { setChapterGapThreshold(e.target.value); setDirty(true); }}
+                  className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground"
+                />
+                <p className="text-xs text-muted-foreground">
+                  A silence gap of at least this many seconds between whisper segments marks a chapter boundary.
+                </p>
+              </div>
+
               <Button
                 onClick={handleSave}
                 disabled={!dirty || updateSettings.isPending}
@@ -428,6 +447,48 @@ export default function SettingsPage() {
               <p className="mt-2 text-xs text-muted-foreground">
                 This runs all chapters sequentially in the background. Large libraries may take a while.
                 Only chapters without existing subtitles will be processed.
+              </p>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <div className="flex items-center gap-2">
+                <ListTree className="h-5 w-5 text-primary" />
+                <CardTitle>Bulk Chapter Detection</CardTitle>
+              </div>
+              <CardDescription>
+                Detect chapter boundaries from whisper timestamps for all single-file audiobooks without chapters
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {generateAllChapters.isPending ? (
+                <Button variant="outline" disabled>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Starting...
+                </Button>
+              ) : (
+                <Button
+                  onClick={() => generateAllChapters.mutate()}
+                  disabled={generateAllChapters.isPending}
+                >
+                  <ListTree className="mr-2 h-4 w-4" />
+                  Generate Chapters for All Books
+                </Button>
+              )}
+              {generateAllChapters.isSuccess && (
+                <p className="mt-2 text-sm text-green-600">
+                  Chapter detection started in the background.
+                </p>
+              )}
+              {generateAllChapters.isError && (
+                <p className="mt-2 text-sm text-red-600">
+                  {errorMessage(generateAllChapters.error, 'Failed to start chapter detection.')}
+                </p>
+              )}
+              <p className="mt-2 text-xs text-muted-foreground">
+                Runs transcription sequentially in the background. Multi-track books and books that
+                already have chapters are skipped. Uses the gap threshold from settings.
               </p>
             </CardContent>
           </Card>

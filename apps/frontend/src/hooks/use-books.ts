@@ -62,7 +62,7 @@ interface Book {
   audiobook_format?: string | null;
   audio_track_count?: number;
   progress?: number;
-  chapters?: Array<{ id: string; index: number; title: string; start_position?: number | null }>;
+  chapters?: Array<{ id: string; index: number; title: string; start_position?: number | null; end_position?: number | null }>;
   created_at: string;
   updated_at: string;
   format: string;
@@ -209,10 +209,42 @@ export function useUpdateBookMetadata(bookId: string) {
 
 export function useGenerateChapterSubtitles(bookId: string) {
   return useMutation({
-    mutationFn: ({ chapterId }: { chapterId: string }) =>
+    mutationFn: ({ chapterId, overwrite }: { chapterId: string; overwrite?: boolean }) =>
       api.post<{ status: string; subtitle_path: string; chapter_id: string }>(
-        `/books/${bookId}/chapters/${chapterId}/generate/subtitles`
+        `/books/${bookId}/chapters/${chapterId}/generate/subtitles`,
+        undefined,
+        overwrite ? { params: { overwrite: true } } : undefined
       ),
+  });
+}
+
+export function useGenerateBookSubtitles(bookId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      api.post<{ status: string; results: Array<{ chapter_id: string; status: string; error?: string }> }>(
+        `/books/${bookId}/generate/subtitles`,
+        { overwrite: true }
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['book', bookId] });
+      queryClient.invalidateQueries({ queryKey: ['books'] });
+    },
+  });
+}
+
+export function useGenerateChapters(bookId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (data?: { overwrite?: boolean; gap_threshold_sec?: number }) =>
+      api.post<{ status: string; chapter_count: number; chapters: Array<{ index: number; title: string; start_position: number; end_position: number }> }>(
+        `/books/${bookId}/generate/chapters`,
+        data
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['book', bookId] });
+      queryClient.invalidateQueries({ queryKey: ['books'] });
+    },
   });
 }
 

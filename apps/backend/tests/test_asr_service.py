@@ -4,6 +4,8 @@ import sys
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from app.services import asr_service
 
 
@@ -242,3 +244,168 @@ def test_chunked_transcription_resumes_existing_partials(monkeypatch, tmp_path) 
     assert cues[1]["start"] == 61.0
     assert result.cue_count == 2
     assert not partial_dir.exists()
+
+
+def test_transcribe_full_source_chunks_long_sources(monkeypatch, tmp_path) -> None:
+    extract_calls = []
+
+    def fake_extract(_audio_path: str, start_sec: float, duration_sec: float) -> str:
+        extract_calls.append((start_sec, duration_sec))
+        chunk_path = tmp_path / f"chunk-{int(start_sec)}.wav"
+        chunk_path.write_text("audio", encoding="utf-8")
+        return str(chunk_path)
+
+    def fake_transcribe(_audio_path: str, *_args, **_kwargs) -> asr_service.TranscriptionResult:
+        return asr_service.TranscriptionResult(
+            text="Chunk",
+            language="en",
+            segments=[
+                {
+                    "start": 1.0,
+                    "end": 2.0,
+                    "text": " Chunk",
+                    "words": [{"start": 1.0, "end": 2.0, "text": "Chunk"}],
+                }
+            ],
+        )
+
+    monkeypatch.setattr(asr_service, "_extract_audio_chunk", fake_extract)
+    monkeypatch.setattr(asr_service, "transcribe", fake_transcribe)
+
+    result = asr_service.transcribe_full_source(
+        "/books/long.mp3",
+        duration_sec=120.0,
+        chunk_duration_s=60,
+    )
+
+    assert extract_calls == [(0, 60.0), (60, 60.0)]
+    assert result.segments[0]["start"] == 1.0
+    assert result.segments[1]["start"] == 61.0
+    assert result.cue_count == 2
+
+
+def test_transcribe_full_source_skips_chunking_for_short_sources(monkeypatch) -> None:
+    calls = []
+
+    def fake_transcribe(_audio_path: str, *_args, **_kwargs):
+        calls.append(_audio_path)
+        return asr_service.TranscriptionResult(
+            text="short",
+            language="en",
+            segments=[{"start": 0.0, "end": 5.0, "text": " short", "words": []}],
+        )
+
+    monkeypatch.setattr(asr_service, "transcribe", fake_transcribe)
+
+    result = asr_service.transcribe_full_source(
+        "/books/short.mp3",
+        duration_sec=10.0,
+        chunk_duration_s=60,
+    )
+    assert calls == ["/books/short.mp3"]
+    assert result.cue_count == 1
+
+
+def test_result_coverage() -> None:
+    result = asr_service.TranscriptionResult(
+        text="",
+        language="en",
+        segments=[{"start": 0.0, "end": 500.0, "text": "", "words": []}],
+    )
+    assert asr_service._result_coverage(result, 1000.0) == 0.5
+    assert asr_service._result_coverage(result, None) == 0.0
+    assert asr_service._result_coverage(result, 100.0) == 1.0
+
+    empty = asr_service.TranscriptionResult(text="", language="en", segments=[])
+    assert asr_service._result_coverage(empty, 1000.0) == 0.0
+
+
+def _word(start: float, end: float, text: str) -> SimpleNamespace:
+    return SimpleNamespace(start=start, end=end, word=text)
+
+
+def _seg(start: float, end: float, text: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        start=start,
+        end=end,
+        text=text,
+        words=[_word(start, end, text)],
+    )
+
+
+def test_transcribe_falls_back_to_ffmpeg_when_decode_truncates(monkeypatch, tmp_path) -> None:
+    calls: list[str] = []
+
+    class FakeModel:
+        def transcribe(self, audio_path: str, **kwargs):
+            calls.append(audio_path)
+            if audio_path == "/books/corrupt.mp3":
+                segments = [_seg(0.0, 100.0, "truncated")]
+            else:
+                segments = [
+                    _seg(0.0, 50.0, "full"),
+                    _seg(500.0, 980.0, "coverage"),
+                ]
+            return iter(segments), SimpleNamespace(language="en")
+
+    monkeypatch.setattr(asr_service, "_get_model_pipeline", lambda: FakeModel())
+    monkeypatch.setattr(asr_service, "probe_audio_duration", lambda _path: 1000.0)
+
+    wav_path = tmp_path / "clean.wav"
+
+    def fake_extract(_audio_path: str, _start_sec: float, _duration_sec: float) -> str:
+        wav_path.write_bytes(b"RIFF")
+        return str(wav_path)
+
+    monkeypatch.setattr(asr_service, "_extract_audio_chunk", fake_extract)
+
+    result = asr_service.transcribe("/books/corrupt.mp3")
+
+    assert calls == ["/books/corrupt.mp3", str(wav_path)]
+    assert [seg["end"] for seg in result.segments] == [50.0, 980.0]
+    assert not wav_path.exists()
+
+
+def test_transcribe_keeps_pyav_result_when_ffmpeg_fallback_no_better(monkeypatch, tmp_path) -> None:
+    class FakeModel:
+        def transcribe(self, audio_path: str, **kwargs):
+            if audio_path == "/books/low.mp3":
+                return iter([_seg(0.0, 400.0, "partial")]), SimpleNamespace(language="en")
+            return iter([_seg(0.0, 400.0, "same")]), SimpleNamespace(language="en")
+
+    monkeypatch.setattr(asr_service, "_get_model_pipeline", lambda: FakeModel())
+    monkeypatch.setattr(asr_service, "probe_audio_duration", lambda _path: 1000.0)
+
+    wav_path = tmp_path / "clean.wav"
+
+    def fake_extract(_audio_path: str, _start_sec: float, _duration_sec: float) -> str:
+        wav_path.write_bytes(b"RIFF")
+        return str(wav_path)
+
+    monkeypatch.setattr(asr_service, "_extract_audio_chunk", fake_extract)
+
+    result = asr_service.transcribe("/books/low.mp3")
+
+    assert result.segments[0]["text"] == "partial"
+    assert not wav_path.exists()
+
+
+def test_transcribe_raises_when_no_words_after_fallback(monkeypatch, tmp_path) -> None:
+    class FakeModel:
+        def transcribe(self, audio_path: str, **kwargs):
+            return iter([]), SimpleNamespace(language="en")
+
+    monkeypatch.setattr(asr_service, "_get_model_pipeline", lambda: FakeModel())
+    monkeypatch.setattr(asr_service, "probe_audio_duration", lambda _path: 1000.0)
+
+    wav_path = tmp_path / "clean.wav"
+
+    def fake_extract(_audio_path: str, _start_sec: float, _duration_sec: float) -> str:
+        wav_path.write_bytes(b"RIFF")
+        return str(wav_path)
+
+    monkeypatch.setattr(asr_service, "_extract_audio_chunk", fake_extract)
+
+    with pytest.raises(asr_service.ASRError, match="no words"):
+        asr_service.transcribe("/books/empty.mp3")
+    assert not wav_path.exists()

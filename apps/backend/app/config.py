@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     authentik_client_id: str = ""
     authentik_client_secret: str = ""
     rreading_glasses_url: str = ""
+    access_token_ttl: int = 60
+    session_ttl_days: int = 30
     books_dir: str = "/books"
     covers_dir: str = "/data/covers"
     secret_key: str = "change-me-to-a-real-secret"

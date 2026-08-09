@@ -1,17 +1,25 @@
 'use client';
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { SessionProvider, useSession } from 'next-auth/react';
+import { SessionProvider, signOut, useSession } from 'next-auth/react';
 import { useEffect, useState } from 'react';
 import { Toaster } from '@/components/ui/toast';
-import { setSessionToken } from '@/lib/api-client';
+import { setAuthSession, setUnauthorizedHandler } from '@/lib/api-client';
+import { routes } from '@/lib/routes';
 
 function SessionTokenBridge() {
-  const { data: session } = useSession();
+  const { data: session, status } = useSession();
 
   useEffect(() => {
-    setSessionToken(session?.accessToken ?? null);
-  }, [session?.accessToken]);
+    if (status !== 'loading') {
+      setAuthSession(session?.accessToken ?? null, session?.sessionToken ?? null);
+    }
+  }, [session?.accessToken, session?.sessionToken, status]);
+
+  useEffect(() => {
+    setUnauthorizedHandler(() => signOut({ callbackUrl: routes.login }));
+    return () => setUnauthorizedHandler(null);
+  }, []);
 
   return null;
 }
@@ -31,7 +39,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
   );
 
   return (
-    <SessionProvider>
+    <SessionProvider refetchOnWindowFocus={false}>
       <QueryClientProvider client={queryClient}>
         <SessionTokenBridge />
         {children}

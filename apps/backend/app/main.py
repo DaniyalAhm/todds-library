@@ -13,6 +13,7 @@ from app.api.router import router
 from app.api.settings import recover_interrupted_generation_logs
 from app.config import settings
 from app.database import init_db
+from app.services.session_service import close_redis, init_redis
 
 logging.basicConfig(
     level=logging.INFO,
@@ -23,10 +24,12 @@ logging.basicConfig(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    await init_redis()
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(None, lambda: command.upgrade(Config("alembic.ini"), "head"))
     await recover_interrupted_generation_logs()
     yield
+    await close_redis()
     await app.state.engine.dispose() if hasattr(app.state, "engine") else None
 
 

@@ -14,6 +14,7 @@ interface SystemSettings {
     batch_size: string;
     chunk_length_s: string;
     vad_filter: string;
+    chapter_gap_threshold_sec: string;
   };
   gpu: {
     available: boolean;
@@ -51,6 +52,19 @@ export function useGenerateAllSubtitles() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: () => api.post('/settings/generate-all-subtitles'),
+    onSuccess: (data: any) => {
+      queryClient.setQueryData(['generation-logs'], (old: any) => ({
+        ...old,
+        running: data.running,
+      }));
+    },
+  });
+}
+
+export function useGenerateAllChapters() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.post('/settings/generate-all-chapters'),
     onSuccess: (data: any) => {
       queryClient.setQueryData(['generation-logs'], (old: any) => ({
         ...old,

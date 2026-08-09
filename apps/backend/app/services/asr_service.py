@@ -272,6 +272,9 @@ def _get_model_pipeline():
     return _MODEL_PIPELINE
 
 
+_COVERAGE_THRESHOLD = 0.7
+
+
 def transcribe(
     audio_path: str,
     language: str | None = None,
@@ -280,6 +283,40 @@ def transcribe(
     vad_filter: bool = False,
 ) -> TranscriptionResult:
     model = _get_model_pipeline()
+    result = _transcribe_source(model, audio_path, language, batch_size, chunk_length_s, vad_filter)
+
+    duration_sec = probe_audio_duration(audio_path)
+    coverage = _result_coverage(result, duration_sec)
+    if coverage < _COVERAGE_THRESHOLD:
+        fallback = _retranscribe_via_ffmpeg(
+            model,
+            audio_path,
+            duration_sec,
+            language,
+            batch_size,
+            chunk_length_s,
+            vad_filter,
+            previous_coverage=coverage,
+        )
+        if fallback is not None:
+            result = fallback
+
+    if result.word_count == 0:
+        raise ASRError(
+            f"Transcription produced no words for {os.path.basename(audio_path)}"
+        )
+
+    return result
+
+
+def _transcribe_source(
+    model,
+    audio_path: str,
+    language: str | None,
+    batch_size: int,
+    chunk_length_s: int,
+    vad_filter: bool,
+) -> TranscriptionResult:
     transcribe_model = model
     transcribe_kwargs = dict(
         language=language,
@@ -319,16 +356,59 @@ def transcribe(
         len(text.split()),
         detected_language,
     )
-
-    if not segments:
-        segments.append({
-            "start": 0.0,
-            "end": 0.0,
-            "text": text,
-            "words": [],
-        })
-
     return TranscriptionResult(text=text, segments=segments, language=detected_language)
+
+
+def _result_coverage(result: TranscriptionResult, duration_sec: float | None) -> float:
+    if not result.segments or not duration_sec or duration_sec <= 0:
+        return 0.0
+    max_end = max(seg.get("end", 0.0) or 0.0 for seg in result.segments)
+    return min(1.0, max_end / duration_sec)
+
+
+def _retranscribe_via_ffmpeg(
+    model,
+    audio_path: str,
+    duration_sec: float | None,
+    language: str | None,
+    batch_size: int,
+    chunk_length_s: int,
+    vad_filter: bool,
+    *,
+    previous_coverage: float,
+) -> TranscriptionResult | None:
+    if not duration_sec or duration_sec <= 0:
+        return None
+
+    logger.warning(
+        "Transcription coverage for %s is %.0f%% of the source duration; "
+        "re-decoding through ffmpeg and retrying (possible corrupt audio)",
+        os.path.basename(audio_path),
+        previous_coverage * 100,
+    )
+
+    tmp_path = None
+    try:
+        tmp_path = _extract_audio_chunk(audio_path, 0.0, duration_sec)
+        fallback = _transcribe_source(
+            model,
+            tmp_path,
+            language,
+            batch_size,
+            chunk_length_s,
+            vad_filter,
+        )
+        if _result_coverage(fallback, duration_sec) > previous_coverage:
+            return fallback
+    except Exception:
+        logger.exception("ffmpeg fallback transcription failed for %s", audio_path)
+    finally:
+        if tmp_path is not None:
+            try:
+                os.unlink(tmp_path)
+            except FileNotFoundError:
+                pass
+    return None
 
 
 def transcribe_chapter(
@@ -365,13 +445,67 @@ def transcribe_chapter_chunked(
     chunk_duration_s: int = LONG_SOURCE_CHUNK_SECONDS,
     progress_callback: Callable[[int, int, float, float], None] | None = None,
 ) -> SubtitleResult:
+    t0 = time.time()
+    output_path = Path(output_dir)
+    partial_dir = output_path / ".partials" / f"chapter_{chapter_index:04d}"
+
+    result = transcribe_full_source(
+        audio_path,
+        language,
+        batch_size,
+        chunk_length_s,
+        vad_filter,
+        duration_sec=duration_sec,
+        chunk_duration_s=chunk_duration_s,
+        progress_callback=progress_callback,
+        resume_dir=str(partial_dir),
+    )
+    elapsed = time.time() - t0
+    logger.info(
+        "Completed chapter %s transcription in %.1fs (%s cues, %s words)",
+        chapter_index,
+        elapsed,
+        result.cue_count,
+        result.word_count,
+    )
+    subtitle_result = _write_chapter_subtitle_files(result, output_dir, chapter_index)
+    logger.info(
+        "Completed chunked chapter %s transcription in %.1fs (%s cues, %s words)",
+        chapter_index,
+        elapsed,
+        subtitle_result.cue_count,
+        subtitle_result.word_count,
+    )
+
+    try:
+        shutil.rmtree(partial_dir)
+    except Exception:
+        logger.exception("Failed to clean subtitle partial directory %s", partial_dir)
+
+    return subtitle_result
+
+
+def transcribe_full_source(
+    audio_path: str,
+    language: str | None = None,
+    batch_size: int = 1,
+    chunk_length_s: int = 30,
+    vad_filter: bool = False,
+    duration_sec: float | None = None,
+    chunk_duration_s: int = LONG_SOURCE_CHUNK_SECONDS,
+    progress_callback: Callable[[int, int, float, float], None] | None = None,
+    resume_dir: str | None = None,
+) -> TranscriptionResult:
     duration = duration_sec if duration_sec and duration_sec > 0 else probe_audio_duration(audio_path)
     if not duration or duration <= 0:
         raise ASRError("Unable to determine audio duration for chunked transcription")
 
-    output_path = Path(output_dir)
-    partial_dir = output_path / ".partials" / f"chapter_{chapter_index:04d}"
-    partial_dir.mkdir(parents=True, exist_ok=True)
+    if duration <= chunk_duration_s:
+        return transcribe(audio_path, language, batch_size, chunk_length_s, vad_filter)
+
+    partial_dir = Path(resume_dir) if resume_dir else None
+    if partial_dir is not None:
+        partial_dir.mkdir(parents=True, exist_ok=True)
 
     total_chunks = max(1, math.ceil(duration / chunk_duration_s))
     chunk_results: list[dict] = []
@@ -387,16 +521,15 @@ def transcribe_chapter_chunked(
         chunk_number = zero_based_index + 1
         start_sec = zero_based_index * chunk_duration_s
         end_sec = min(duration, start_sec + chunk_duration_s)
-        partial_path = partial_dir / f"chunk_{chunk_number:06d}.json"
+        partial_path = partial_dir / f"chunk_{chunk_number:06d}.json" if partial_dir else None
 
         try:
-            if partial_path.exists():
+            if partial_path is not None and partial_path.exists():
                 chunk_data = _load_chunk_partial(partial_path)
                 logger.info(
-                    "Skipping completed subtitle chunk %s/%s for chapter %s",
+                    "Skipping completed chunk %s/%s",
                     chunk_number,
                     total_chunks,
-                    chapter_index,
                 )
             else:
                 tmp_path = _extract_audio_chunk(audio_path, start_sec, end_sec - start_sec)
@@ -416,7 +549,8 @@ def transcribe_chapter_chunked(
                         "text": chunk_result.text,
                         "segments": _offset_segments(chunk_result.segments, start_sec),
                     }
-                    _write_chunk_partial(partial_path, chunk_data)
+                    if partial_path is not None:
+                        _write_chunk_partial(partial_path, chunk_data)
                 finally:
                     try:
                         os.unlink(tmp_path)
@@ -429,23 +563,7 @@ def transcribe_chapter_chunked(
         except Exception as exc:
             raise ASRError(f"Chunk {chunk_number}/{total_chunks} failed: {exc}") from exc
 
-    result = _stitch_chunk_results(chunk_results, language)
-    subtitle_result = _write_chapter_subtitle_files(result, output_dir, chapter_index)
-    elapsed = time.time() - t0
-    logger.info(
-        "Completed chunked chapter %s transcription in %.1fs (%s cues, %s words)",
-        chapter_index,
-        elapsed,
-        subtitle_result.cue_count,
-        subtitle_result.word_count,
-    )
-
-    try:
-        shutil.rmtree(partial_dir)
-    except Exception:
-        logger.exception("Failed to clean subtitle partial directory %s", partial_dir)
-
-    return subtitle_result
+    return _stitch_chunk_results(chunk_results, language)
 
 
 def _extract_audio_chunk(audio_path: str, start_sec: float, duration_sec: float) -> str:

@@ -3,11 +3,12 @@
 import { useParams, useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import { useAuth } from '@/hooks/use-auth';
-import { useBook, useBookProgress, useBookmarks, useDeleteBookmark, useRefreshBookMetadata } from '@/hooks/use-books';
+import { useBook, useBookProgress, useBookmarks, useDeleteBookmark, useRefreshBookMetadata, useGenerateBookSubtitles } from '@/hooks/use-books';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Skeleton } from '@/components/ui/skeleton';
+import { toast } from '@/components/ui/toast';
 import {
   BookOpen,
   Headphones,
@@ -19,6 +20,7 @@ import {
   Calendar,
   FileText,
   Hash,
+  RefreshCw,
   User,
 } from 'lucide-react';
 import { formatDuration, formatDate, formatFileSize, getProgressPercent } from '@/lib/utils';
@@ -35,6 +37,7 @@ export default function BookDetailPage() {
   const { data: bookmarks } = useBookmarks(id);
   const deleteBookmark = useDeleteBookmark(id);
   const refreshMetadata = useRefreshBookMetadata(id);
+  const generateBookSubtitles = useGenerateBookSubtitles(id);
 
   if (isLoading) {
     return (
@@ -172,6 +175,40 @@ export default function BookDetailPage() {
               >
                 <Edit3 className="mr-2 h-4 w-4" />
                 Refresh Metadata
+              </Button>
+            )}
+            {user?.isAdmin && book.has_audiobook && (
+              <Button
+                variant="ghost"
+                onClick={() =>
+                  generateBookSubtitles.mutate(undefined, {
+                    onSuccess: (res) => {
+                      const failed = (res.results || []).filter((r) => r.status === 'failed');
+                      toast({
+                        title: 'Subtitle regeneration started',
+                        description: failed.length > 0
+                          ? `${failed.length} chapter(s) could not be regenerated.`
+                          : 'Subtitles are being regenerated for all chapters.',
+                        variant: failed.length > 0 ? 'destructive' : 'success',
+                      });
+                    },
+                    onError: (error) => {
+                      const message =
+                        typeof error === 'object' && error !== null && 'message' in error
+                          ? String((error as { message?: unknown }).message)
+                          : 'Subtitle regeneration failed.';
+                      toast({
+                        title: 'Subtitle regeneration failed',
+                        description: message,
+                        variant: 'destructive',
+                      });
+                    },
+                  })
+                }
+                disabled={generateBookSubtitles.isPending}
+              >
+                <RefreshCw className="mr-2 h-4 w-4" />
+                {generateBookSubtitles.isPending ? 'Regenerating...' : 'Regenerate Subtitles'}
               </Button>
             )}
           </div>

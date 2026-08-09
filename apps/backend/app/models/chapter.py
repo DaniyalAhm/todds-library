@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import ForeignKey, Integer, String
+from sqlalchemy import Float, ForeignKey, Integer, String
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -20,7 +20,7 @@ class Chapter(Base):
     )
     index: Mapped[int] = mapped_column(Integer, nullable=False)
     title: Mapped[str] = mapped_column(String(512), nullable=False)
-    start_position: Mapped[float | None] = mapped_column(Integer, nullable=True)
-    end_position: Mapped[float | None] = mapped_column(Integer, nullable=True)
+    start_position: Mapped[float | None] = mapped_column(Float, nullable=True)
+    end_position: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     book = relationship("Book", back_populates="chapters", lazy="selectin")

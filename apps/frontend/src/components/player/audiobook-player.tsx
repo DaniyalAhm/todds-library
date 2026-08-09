@@ -2,7 +2,8 @@
 
 import { useEffect, useRef, useCallback, useState } from 'react';
 import AudioPlayer from 'react-h5-audio-player';
-import { useBook, useBookProgress, useGenerateChapterSubtitles, useUpdateProgress } from '@/hooks/use-books';
+import { useBook, useBookProgress, useGenerateChapterSubtitles, useGenerateChapters, useUpdateProgress } from '@/hooks/use-books';
+import { useAuth } from '@/hooks/use-auth';
 import { cn } from '@/lib/utils';
 import { usePlayer } from '@/hooks/use-player';
 import { ChapterList } from './chapter-list';
@@ -10,7 +11,7 @@ import { SleepTimer } from './sleep-timer';
 import { Slider } from '@/components/ui/slider';
 import { Button } from '@/components/ui/button';
 import { toast } from '@/components/ui/toast';
-import { Captions, CaptionsOff, Headphones, Maximize, Minimize, PanelTop, Pause, Play, SkipBack, SkipForward } from 'lucide-react';
+import { Captions, CaptionsOff, Headphones, ListTree, Maximize, Minimize, PanelTop, Pause, Play, RefreshCw, SkipBack, SkipForward } from 'lucide-react';
 import { SubtitleOverlay, loadSubtitleFile } from '@/components/reader/subtitle-overlay';
 import type { SubtitleCue } from '@/components/reader/subtitle-overlay';
 
@@ -19,10 +20,12 @@ interface AudiobookPlayerProps {
 }
 
 export function AudiobookPlayer({ bookId }: AudiobookPlayerProps) {
+  const { user } = useAuth();
   const { data: book } = useBook(bookId);
   const { data: progress } = useBookProgress(bookId);
   const updateProgress = useUpdateProgress(bookId);
   const generateChapterSubtitles = useGenerateChapterSubtitles(bookId);
+  const generateChapters = useGenerateChapters(bookId);
   const playerRef = useRef<AudioPlayer>(null);
   const hlsRef = useRef<any>(null);
   const [audioSrc, setAudioSrc] = useState('');
@@ -323,10 +326,10 @@ export function AudiobookPlayer({ bookId }: AudiobookPlayerProps) {
     if (currentChapter?.id) {
       setCues([]);
       loadSubtitleFile(bookId, currentChapter.id)
-        .then((loadedCues) => setCues(normalizeCuesToPlaybackTimeline(loadedCues, currentChapter)))
+        .then((loadedCues) => setCues(normalizeCuesToPlaybackTimeline(loadedCues, currentChapter, isMultiTrackDirect)))
         .catch(() => setCues([]));
     }
-  }, [chapterIndex, chapters, bookId]);
+  }, [chapterIndex, chapters, bookId, isMultiTrackDirect]);
 
   useEffect(() => {
     const onFullscreenChange = () => {
@@ -465,7 +468,7 @@ export function AudiobookPlayer({ bookId }: AudiobookPlayerProps) {
     try {
       await generateChapterSubtitles.mutateAsync({ chapterId: currentChapter.id });
       const nextCues = await loadSubtitleFile(bookId, currentChapter.id);
-      setCues(normalizeCuesToPlaybackTimeline(nextCues, currentChapter));
+      setCues(normalizeCuesToPlaybackTimeline(nextCues, currentChapter, isMultiTrackDirect));
       toast({
         title: 'Subtitles generated',
         description: nextCues.length > 0
@@ -480,6 +483,55 @@ export function AudiobookPlayer({ bookId }: AudiobookPlayerProps) {
           : 'Speech recognition failed for this chapter.';
       toast({
         title: 'Subtitle generation failed',
+        description: message,
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const handleGenerateChapters = async () => {
+    try {
+      const res = await generateChapters.mutateAsync({ overwrite: true });
+      toast({
+        title: 'Chapters generated',
+        description: `Detected ${res.chapter_count} chapters from whisper timestamps.`,
+        variant: 'success',
+      });
+    } catch (error) {
+      const message =
+        typeof error === 'object' && error !== null && 'message' in error
+          ? String((error as { message?: unknown }).message)
+          : 'Chapter detection failed.';
+      toast({
+        title: 'Chapter generation failed',
+        description: message,
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const handleForceRegenerateSubtitles = async () => {
+    const currentChapter = chapters[chapterIndex];
+    if (!currentChapter?.id) return;
+
+    try {
+      await generateChapterSubtitles.mutateAsync({ chapterId: currentChapter.id, overwrite: true });
+      const nextCues = await loadSubtitleFile(bookId, currentChapter.id);
+      setCues(normalizeCuesToPlaybackTimeline(nextCues, currentChapter, isMultiTrackDirect));
+      toast({
+        title: 'Subtitles regenerated',
+        description: nextCues.length > 0
+          ? 'Captions were regenerated for this chapter.'
+          : 'Subtitle files were regenerated for this chapter.',
+        variant: 'success',
+      });
+    } catch (error) {
+      const message =
+        typeof error === 'object' && error !== null && 'message' in error
+          ? String((error as { message?: unknown }).message)
+          : 'Speech recognition failed for this chapter.';
+      toast({
+        title: 'Subtitle regeneration failed',
         description: message,
         variant: 'destructive',
       });
@@ -603,6 +655,36 @@ export function AudiobookPlayer({ bookId }: AudiobookPlayerProps) {
                   {generateChapterSubtitles.isPending ? 'Generating...' : 'Generate Subtitles'}
                 </span>
               </Button>
+
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={handleGenerateChapters}
+                disabled={generateChapters.isPending}
+                className="min-w-0 justify-center px-2"
+              >
+                <ListTree className="mr-2 h-4 w-4" />
+                <span className="truncate">
+                  {generateChapters.isPending ? 'Detecting...' : 'Generate Chapters'}
+                </span>
+              </Button>
+
+              {user?.isAdmin && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={handleForceRegenerateSubtitles}
+                  disabled={!currentChapter?.id || generateChapterSubtitles.isPending}
+                  className="min-w-0 justify-center px-2"
+                >
+                  <RefreshCw className="mr-2 h-4 w-4" />
+                  <span className="truncate">
+                    {generateChapterSubtitles.isPending ? 'Regenerating...' : 'Force Regenerate Subtitles'}
+                  </span>
+                </Button>
+              )}
 
               <Button
                 type="button"
@@ -789,22 +871,10 @@ export function AudiobookPlayer({ bookId }: AudiobookPlayerProps) {
 
 function normalizeCuesToPlaybackTimeline(
   cues: SubtitleCue[],
-  chapter: { start: number; end: number }
+  chapter: { start: number; end: number },
+  isMultiTrack: boolean
 ): SubtitleCue[] {
-  if (cues.length === 0 || chapter.start <= 0) {
-    return cues;
-  }
-
-  const chapterDuration = Math.max(0, chapter.end - chapter.start);
-  if (chapterDuration <= 0) {
-    return cues;
-  }
-
-  const maxCueEnd = Math.max(...cues.map((cue) => cue.end));
-  const timestampTolerance = 2;
-  const cuesLookChapterLocal = maxCueEnd <= chapterDuration + timestampTolerance;
-
-  if (!cuesLookChapterLocal) {
+  if (cues.length === 0 || chapter.start <= 0 || !isMultiTrack) {
     return cues;
   }
 

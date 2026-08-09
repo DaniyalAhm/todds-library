@@ -2,6 +2,7 @@
 
 import { useSession, signIn, signOut } from 'next-auth/react';
 import { useCallback } from 'react';
+import { api } from '@/lib/api-client';
 import { routes } from '@/lib/routes';
 
 export function useAuth() {
@@ -22,7 +23,13 @@ export function useAuth() {
       }),
     []
   );
-  const logout = useCallback(() => signOut({ callbackUrl: routes.login }), []);
+  const logout = useCallback(() => {
+    const sessionToken = session?.sessionToken;
+    if (sessionToken) {
+      void api.post('/auth/logout', { session_token: sessionToken }).catch(() => {});
+    }
+    return signOut({ callbackUrl: routes.login });
+  }, [session?.sessionToken]);
 
   return {
     user,

@@ -10,6 +10,7 @@ from pydantic import BaseModel
 class AuthResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+    session_token: str
     user_id: UUID
     username: str
     email: str
@@ -24,6 +25,14 @@ class LoginRequest(BaseModel):
 class RegisterRequest(BaseModel):
     username: str
     password: str
+
+
+class RefreshRequest(BaseModel):
+    session_token: str
+
+
+class LogoutRequest(BaseModel):
+    session_token: str
 
 
 class SetupStatus(BaseModel):

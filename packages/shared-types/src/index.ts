@@ -68,6 +68,7 @@ export const BookChapterSchema = z.object({
   index: z.number(),
   title: z.string(),
   startPosition: z.number(),
+  endPosition: z.number().optional(),
 });
 export type BookChapter = z.infer<typeof BookChapterSchema>;
 

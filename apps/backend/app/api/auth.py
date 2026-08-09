@@ -15,6 +15,8 @@ from app.schemas.auth import (
     AdminUserUpdate,
     AuthResponse,
     LoginRequest,
+    LogoutRequest,
+    RefreshRequest,
     RegisterRequest,
     SetupStatus,
     UserInfo,
@@ -23,9 +25,16 @@ from app.services.auth_service import (
     authenticate_user,
     create_user_jwt,
     get_or_create_authentik_user,
+    get_user_by_id,
     get_user_by_username,
     hash_password,
     validate_authentik_token,
+)
+from app.services.session_service import (
+    create_session,
+    get_session,
+    revoke_all_user_sessions,
+    revoke_session,
 )
 from app.models.user import User
 from app.models.bookmark import Bookmark
@@ -38,6 +47,19 @@ router = APIRouter()
 async def has_users(db: AsyncSession) -> bool:
     result = await db.execute(select(User.id).limit(1))
     return result.scalar_one_or_none() is not None
+
+
+async def _auth_response(user: User) -> AuthResponse:
+    access_token = create_user_jwt(user)
+    session_token = await create_session(user.id)
+    return AuthResponse(
+        access_token=access_token,
+        session_token=session_token,
+        user_id=user.id,
+        username=user.username,
+        email=user.email,
+        is_admin=user.is_admin,
+    )
 
 
 def _admin_user_info(user: User) -> AdminUserInfo:
@@ -117,14 +139,7 @@ async def local_login(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid username or password",
         )
-    token = create_user_jwt(user)
-    return AuthResponse(
-        access_token=token,
-        user_id=user.id,
-        username=user.username,
-        email=user.email,
-        is_admin=user.is_admin,
-    )
+    return await _auth_response(user)
 
 
 @router.post("/register", response_model=AuthResponse)
@@ -159,14 +174,7 @@ async def register(
     await db.commit()
     await db.refresh(user)
 
-    token = create_user_jwt(user)
-    return AuthResponse(
-        access_token=token,
-        user_id=user.id,
-        username=user.username,
-        email=user.email,
-        is_admin=user.is_admin,
-    )
+    return await _auth_response(user)
 
 
 @router.post("/authentik", response_model=AuthResponse)
@@ -186,9 +194,29 @@ async def authentik_login(
             detail="Invalid token",
         )
     user = await get_or_create_authentik_user(db, claims)
-    token = create_user_jwt(user)
+    return await _auth_response(user)
+
+
+@router.post("/refresh", response_model=AuthResponse)
+async def refresh_token(
+    request: RefreshRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    user_id = await get_session(request.session_token)
+    if user_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired session",
+        )
+    user = await get_user_by_id(db, UUID(user_id))
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found",
+        )
     return AuthResponse(
-        access_token=token,
+        access_token=create_user_jwt(user),
+        session_token=request.session_token,
         user_id=user.id,
         username=user.username,
         email=user.email,
@@ -196,18 +224,10 @@ async def authentik_login(
     )
 
 
-@router.post("/refresh", response_model=AuthResponse)
-async def refresh_token(
-    current_user: User = Depends(get_current_user),
-):
-    token = create_user_jwt(current_user)
-    return AuthResponse(
-        access_token=token,
-        user_id=current_user.id,
-        username=current_user.username,
-        email=current_user.email,
-        is_admin=current_user.is_admin,
-    )
+@router.post("/logout")
+async def logout(request: LogoutRequest):
+    await revoke_session(request.session_token)
+    return {"status": "ok"}
 
 
 @router.get("/me", response_model=UserInfo)
@@ -318,3 +338,4 @@ async def delete_user(
     await db.execute(delete(Bookmark).where(Bookmark.user_id == user.id))
     await db.delete(user)
     await db.commit()
+    await revoke_all_user_sessions(str(user.id))

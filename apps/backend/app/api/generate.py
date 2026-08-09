@@ -6,8 +6,8 @@ import logging
 from pathlib import Path
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,10 +17,22 @@ from app.models.chapter import Chapter
 from app.models.settings import SystemSetting
 from app.models.subtitle import SubtitleMetadata
 from app.models.user import User
-from app.services import asr_service
+from app.services import asr_service, chapter_service
 from app.services.asr_service import ASRError, SubtitleResult, transcribe_chapter, transcribe_chapter_chunked
+from app.services.audiobook_service import get_audio_files
 from app.services.book_service import get_book_for_user
-from app.api.settings import _add_log, _generation_error_message, _run_with_transcription_heartbeats
+from app.services.chapter_service import (
+    ChapterDetectionError,
+    DEFAULT_GAP_THRESHOLD_SEC,
+    apply_chapters_to_book,
+    detect_book_chapters_sync,
+)
+from app.api.settings import (
+    _add_log,
+    _clear_chapter_partials,
+    _generation_error_message,
+    _run_with_transcription_heartbeats,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -136,12 +148,19 @@ router = APIRouter()
 
 class GenerateSubtitlesRequest(BaseModel):
     chapter_ids: list[UUID] | None = None
+    overwrite: bool = False
+
+
+class GenerateChaptersRequest(BaseModel):
+    overwrite: bool = False
+    gap_threshold_sec: float = Field(DEFAULT_GAP_THRESHOLD_SEC, gt=0)
 
 
 @router.post("/books/{book_id}/chapters/{chapter_id}/generate/subtitles")
 async def generate_chapter_subtitles(
     book_id: UUID,
     chapter_id: UUID,
+    overwrite: bool = Query(False),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -156,10 +175,17 @@ async def generate_chapter_subtitles(
     if chapter is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chapter not found")
 
+    if overwrite and not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required to regenerate subtitles",
+        )
+
     existing_sub = await db.execute(
         select(SubtitleMetadata).where(SubtitleMetadata.chapter_id == chapter_id)
     )
-    if existing_sub.scalar_one_or_none() is not None:
+    has_existing = existing_sub.scalar_one_or_none() is not None
+    if has_existing and not overwrite:
         await _add_log(
             db,
             book.id,
@@ -191,6 +217,18 @@ async def generate_chapter_subtitles(
     subtitles_dir = _subtitle_dir(book)
     subtitles_dir.mkdir(parents=True, exist_ok=True)
     book_title = book.title or Path(book.file_path).stem
+
+    if overwrite and has_existing:
+        _clear_chapter_partials(subtitles_dir, chapter.index or 0)
+        await _add_log(
+            db,
+            book.id,
+            chapter.id,
+            chapter.index,
+            book_title,
+            "started",
+            "Regenerating subtitles (overwriting existing)...",
+        )
 
     use_chunked = asr_service.should_use_chunked_transcription(
         audio_source_count=_audio_source_count(book),
@@ -280,6 +318,13 @@ async def generate_all_subtitles(
         await _add_log(db, book.id, None, None, book.title or Path(book.file_path).stem, "failed", "No chapters found")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No chapters found")
 
+    overwrite = bool(req and req.overwrite)
+    if overwrite and not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required to regenerate subtitles",
+        )
+
     tc = await _load_transcribe_settings(db)
     subtitles_dir = _subtitle_dir(book)
     subtitles_dir.mkdir(parents=True, exist_ok=True)
@@ -290,7 +335,8 @@ async def generate_all_subtitles(
         existing_sub = await db.execute(
             select(SubtitleMetadata).where(SubtitleMetadata.chapter_id == chapter.id)
         )
-        if existing_sub.scalar_one_or_none() is not None:
+        has_existing = existing_sub.scalar_one_or_none() is not None
+        if has_existing and not overwrite:
             await _add_log(db, book.id, chapter.id, chapter.index, book_title, "skipped", "Subtitles already exist")
             completed.append({"chapter_id": str(chapter.id), "status": "skipped"})
             continue
@@ -301,6 +347,9 @@ async def generate_all_subtitles(
             await _add_log(db, book.id, chapter.id, chapter.index, book_title, "failed", message)
             completed.append({"chapter_id": str(chapter.id), "status": "failed", "error": message})
             continue
+
+        if overwrite and has_existing:
+            _clear_chapter_partials(subtitles_dir, chapter.index or 0)
 
         use_chunked = asr_service.should_use_chunked_transcription(
             audio_source_count=_audio_source_count(book),
@@ -389,3 +438,113 @@ async def get_subtitle_generation_status(
         generated.append({"chapter_index": chapter_idx, "format": "srt", "path": str(f)})
 
     return {"book_id": str(book_id), "generated_chapters": generated}
+
+
+@router.post("/books/{book_id}/generate/chapters")
+async def generate_book_chapters(
+    book_id: UUID,
+    req: GenerateChaptersRequest | None = None,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    book = await get_book_for_user(db, book_id, current_user.id)
+    if book is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
+    if not book.has_audiobook:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Not an audiobook")
+
+    audio_files = get_audio_files(book)
+    if len(audio_files) > 1:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Multi-track audiobooks already have per-track chapters",
+        )
+
+    overwrite = req.overwrite if req else False
+    gap_threshold_sec = req.gap_threshold_sec if req else DEFAULT_GAP_THRESHOLD_SEC
+    tc = await _load_transcribe_settings(db)
+    book_title = book.title or Path(book.file_path).stem
+
+    subtitle_result = await db.execute(
+        select(SubtitleMetadata)
+        .where(
+            SubtitleMetadata.book_id == book.id,
+            SubtitleMetadata.status == "completed",
+        )
+        .order_by(SubtitleMetadata.cue_count.desc())
+    )
+    subtitle_candidates = [
+        (row.json_path, row.cue_count)
+        for row in subtitle_result.scalars().all()
+        if row.json_path
+    ]
+
+    await _add_log(
+        db,
+        book.id,
+        None,
+        None,
+        book_title,
+        "started",
+        (
+            "Reusing existing subtitle timestamps for chapter detection "
+            f"(gap threshold {gap_threshold_sec}s)..."
+            if subtitle_candidates
+            else f"Detecting chapters from whisper timestamps (gap threshold {gap_threshold_sec}s)..."
+        ),
+    )
+    try:
+        result = await _run_with_transcription_heartbeats(
+            db,
+            lambda: detect_book_chapters_sync(
+                book,
+                gap_threshold_sec=gap_threshold_sec,
+                language=tc["language"],
+                batch_size=tc["batch_size"],
+                chunk_length_s=tc["chunk_length_s"],
+                vad_filter=tc["vad_filter"],
+                subtitle_candidates=subtitle_candidates,
+            ),
+            book_id=book.id,
+            chapter_id=None,
+            chapter_index=None,
+            book_title=book_title,
+        )
+        await apply_chapters_to_book(
+            db,
+            book,
+            result["chapters"],
+            overwrite=overwrite,
+            duration=result["duration"],
+        )
+        await _add_log(
+            db,
+            book.id,
+            None,
+            None,
+            book_title,
+            "completed",
+            f"Detected {len(result['chapters'])} chapters",
+        )
+        return {
+            "status": "completed",
+            "chapter_count": len(result["chapters"]),
+            "duration": result["duration"],
+            "source": result["source"],
+            "chapters": result["chapters"],
+        }
+    except ChapterDetectionError as e:
+        await _add_log(db, book.id, None, None, book_title, "failed", str(e))
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+    except (ASRError, Exception) as e:
+        await _add_log(
+            db,
+            book.id,
+            None,
+            None,
+            book_title,
+            "failed",
+            _generation_error_message(e, "Chapter detection failed"),
+        )
+        logger.exception('Chapter detection failed for "%s"', book_title)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))

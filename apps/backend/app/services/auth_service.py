@@ -106,7 +106,7 @@ def create_app_claims(user: User) -> dict:
 
 def create_user_jwt(user: User) -> str:
     claims = create_app_claims(user)
-    claims["exp"] = datetime.utcnow() + timedelta(hours=24)
+    claims["exp"] = datetime.utcnow() + timedelta(minutes=settings.access_token_ttl)
     claims["iat"] = datetime.utcnow()
     return jwt.encode(claims, settings.secret_key, algorithm=Algorithms.HS256)
 

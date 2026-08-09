@@ -19,7 +19,12 @@ from app.models.subtitle import SubtitleMetadata
 from app.services import asr_service
 from app.services.asr_service import ASRError, transcribe_chapter, transcribe_chapter_chunked
 from app.services.book_service import get_book_for_user
-from app.api.settings import _add_log, _generation_error_message, _run_with_transcription_heartbeats
+from app.api.settings import (
+    _add_log,
+    _clear_chapter_partials,
+    _generation_error_message,
+    _run_with_transcription_heartbeats,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -98,6 +103,7 @@ router = APIRouter()
 async def transcribe_chapter_endpoint(
     book_id: UUID,
     chapter_id: UUID,
+    overwrite: bool = Query(False),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -112,10 +118,17 @@ async def transcribe_chapter_endpoint(
     if chapter is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chapter not found")
 
+    if overwrite and not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required to regenerate subtitles",
+        )
+
     existing_sub = await db.execute(
         select(SubtitleMetadata).where(SubtitleMetadata.chapter_id == chapter_id)
     )
-    if existing_sub.scalar_one_or_none() is not None:
+    has_existing = existing_sub.scalar_one_or_none() is not None
+    if has_existing and not overwrite:
         await _add_log(
             db,
             book.id,
@@ -147,6 +160,18 @@ async def transcribe_chapter_endpoint(
     subtitles_dir = _subtitle_dir(book)
     subtitles_dir.mkdir(parents=True, exist_ok=True)
     book_title = book.title or Path(book.file_path).stem
+
+    if overwrite and has_existing:
+        _clear_chapter_partials(subtitles_dir, chapter.index or 0)
+        await _add_log(
+            db,
+            book.id,
+            chapter.id,
+            chapter.index,
+            book_title,
+            "started",
+            "Regenerating subtitles (overwriting existing)...",
+        )
 
     use_chunked = asr_service.should_use_chunked_transcription(
         audio_source_count=_audio_source_count(book),

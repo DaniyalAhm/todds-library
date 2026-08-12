@@ -24,6 +24,7 @@ from app.scanner.cbz_parser import parse_cbz
 from app.scanner.epub_parser import parse_epub
 from app.scanner.file_parser import classify_file, get_file_hash, parse_filename
 from app.scanner.pdf_parser import parse_pdf
+from app.services.audio_health_service import build_health_dict
 from app.services.metadata_service import enrich_book_metadata
 from app.services.search_service import index_book_in_meili, remove_book_from_meili
 
@@ -348,6 +349,10 @@ async def parse_book_file(
             )
             position += duration
 
+    if fmt in (BookFormat.mp3, BookFormat.m4b, BookFormat.flac, BookFormat.ogg, BookFormat.aac, BookFormat.wma) or audio_files:
+        audio_targets = audio_files or [file_path]
+        metadata["audio_health"] = await asyncio.to_thread(build_health_dict, audio_targets)
+
     return metadata
 
 
@@ -362,6 +367,7 @@ def build_extra_metadata(metadata: dict) -> dict | None:
     extra = dict(metadata.get("metadata") or {})
     for key in (
         "audio_files",
+        "audio_health",
         "book_folder_path",
         "ebook_path",
         "ebook_format",
@@ -457,6 +463,7 @@ async def update_book_in_db(
         for key in (
             "metadata",
             "audio_files",
+            "audio_health",
             "book_folder_path",
             "ebook_path",
             "ebook_format",

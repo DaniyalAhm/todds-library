@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
+import shutil
 from pathlib import Path
 
 from app.config import settings
 from app.models.book import Book
+from app.services.audio_health_service import resolve_repair_path
 from app.transcoder.hls import (
     cleanup_segments,
     get_segment,
@@ -12,6 +16,7 @@ from app.transcoder.hls import (
     transcode_to_hls as transcode_file_to_hls,
 )
 
+logger = logging.getLogger(__name__)
 HLS_DIR = Path(settings.covers_dir).parent / "hls"
 
 
@@ -24,16 +29,48 @@ async def get_or_create_hls_playlist(book: Book) -> str | None:
     playlist_path = output_dir / "master.m3u8"
     if not playlist_path.is_file():
         try:
-            if len(audio_files) > 1:
-                playlist = await transcode_audio_files_to_hls(audio_files, str(output_dir))
-            elif len(audio_files) == 1:
-                playlist = await transcode_to_hls(audio_files[0], str(output_dir))
-            else:
-                playlist = await transcode_to_hls(book.file_path, str(output_dir))
+            playlist = await _transcode_for_book(book, audio_files, str(output_dir))
             return playlist
         except Exception:
+            logger.exception("HLS transcode failed for %s; attempting audio repair", book.id)
+
+        repaired = await _repair_transcode_sources(audio_files)
+        if repaired is None:
+            return None
+        try:
+            playlist = await _transcode_for_book(book, repaired, str(output_dir))
+            return playlist
+        except Exception:
+            logger.exception("HLS transcode failed for %s even after repair", book.id)
             return None
     return str(playlist_path)
+
+
+async def _transcode_for_book(book: Book, audio_files: list[str], output_dir: str) -> str:
+    if len(audio_files) > 1:
+        return transcode_files_to_hls(audio_files, output_dir)
+    if len(audio_files) == 1:
+        return transcode_file_to_hls(audio_files[0], output_dir)
+    return transcode_file_to_hls(book.file_path, output_dir)
+
+
+async def _repair_transcode_sources(audio_files: list[str]) -> list[str] | None:
+    repaired = []
+    for path in audio_files:
+        clean = await asyncio.to_thread(resolve_repair_path, path)
+        if clean is None:
+            logger.warning("No usable playback path for %s; skipping HLS repair", path)
+            return None
+        repaired.append(clean)
+    return repaired
+
+
+async def rebuild_hls_playlist(book: Book) -> str | None:
+    """Regenerate the HLS playlist from scratch, repairing corrupt sources as needed."""
+    output_dir = HLS_DIR / str(book.id)
+    if output_dir.is_dir():
+        shutil.rmtree(output_dir, ignore_errors=True)
+    return await get_or_create_hls_playlist(book)
 
 
 def get_audio_files(book: Book) -> list[str]:
@@ -43,16 +80,6 @@ def get_audio_files(book: Book) -> list[str]:
         audio_path = metadata.get("audiobook_path")
         files = [audio_path] if isinstance(audio_path, str) else []
     return [str(path) for path in files if isinstance(path, str) and os.path.isfile(path)]
-
-
-async def transcode_to_hls(input_path: str, output_dir: str) -> str:
-    playlist = transcode_file_to_hls(input_path, output_dir)
-    return playlist
-
-
-async def transcode_audio_files_to_hls(input_paths: list[str], output_dir: str) -> str:
-    playlist = transcode_files_to_hls(input_paths, output_dir)
-    return playlist
 
 
 async def get_stream_segment(book: Book, segment_name: str) -> bytes | None:

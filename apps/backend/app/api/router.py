@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from app.api import asr, auth, audiobooks, books, generate, libraries, metadata, search, settings
+from app.api import asr, audio_health, auth, audiobooks, books, generate, libraries, metadata, search, settings
 
 router = APIRouter()
 
@@ -15,3 +15,4 @@ router.include_router(metadata.router, prefix="/metadata", tags=["metadata"])
 router.include_router(settings.router, prefix="", tags=["settings"])
 router.include_router(asr.router, prefix="", tags=["asr"])
 router.include_router(generate.router, prefix="", tags=["generate"])
+router.include_router(audio_health.router, prefix="", tags=["audio-health"])

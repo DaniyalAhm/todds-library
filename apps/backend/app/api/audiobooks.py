@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import os
 import shutil
-import subprocess
-from pathlib import Path
 from urllib.parse import quote
 from uuid import UUID
 
@@ -15,70 +13,26 @@ from app.dependencies import get_current_user_from_request, get_db
 from app.models.user import User
 from app.services.audiobook_service import get_or_create_hls_playlist, get_stream_segment
 from app.services.audiobook_service import get_audio_files
-from app.services.asr_service import has_leading_zero_padding
 from app.services.book_service import get_book_for_user
 
 router = APIRouter()
 
 
 def _sanitized_download_path(audio_path: str) -> str | None:
-    if not has_leading_zero_padding(audio_path):
-        return None
+    """Return a clean playback path for a corrupt/degraded source.
+
+    Healthy files are served directly; damaged files are transparently
+    re-encoded into a cached repair copy (never touching the source).
+    """
     if not shutil.which("ffmpeg"):
         return None
 
-    from app.config import settings
+    from app.services.audio_health_service import check_audio_file, resolve_repair_path
 
-    cache_dir = Path(settings.covers_dir).parent / "sanitized"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    stat = os.stat(audio_path)
-    key = f"{os.path.basename(audio_path)}-{stat.st_size}-{int(stat.st_mtime)}"
-    output_path = cache_dir / f"{key}.mp3"
-    if output_path.is_file():
-        return str(output_path)
-
-    tmp_path = output_path.with_suffix(".tmp.mp3")
-    try:
-        result = subprocess.run(
-            [
-                "ffmpeg",
-                "-y",
-                "-v",
-                "error",
-                "-err_detect",
-                "ignore_err",
-                "-i",
-                audio_path,
-                "-vn",
-                "-ac",
-                "2",
-                "-ar",
-                "44100",
-                "-c:a",
-                "libmp3lame",
-                "-q:a",
-                "4",
-                tmp_path,
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=3600,
-        )
-        if result.returncode != 0 or not tmp_path.is_file() or tmp_path.stat().st_size == 0:
-            try:
-                os.unlink(tmp_path)
-            except FileNotFoundError:
-                pass
-            return None
-        tmp_path.replace(output_path)
-        return str(output_path)
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except FileNotFoundError:
-            pass
+    result = check_audio_file(audio_path, full_decode=False)
+    if result.status == "ok" or result.status == "unreadable":
         return None
+    return resolve_repair_path(audio_path)
 
 
 @router.get("/{book_id}/download")

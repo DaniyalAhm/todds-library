@@ -4,6 +4,8 @@ import { useAuth } from '@/hooks/use-auth';
 import { useRouter } from 'next/navigation';
 import { useEffect } from 'react';
 import { Shell } from '@/components/layout/shell';
+import { PlayerHost } from '@/components/player/player-host';
+import { MiniPlayer } from '@/components/player/mini-player';
 import { routes } from '@/lib/routes';
 
 export default function AuthenticatedLayout({
@@ -32,5 +34,10 @@ export default function AuthenticatedLayout({
     return null;
   }
 
-  return <Shell>{children}</Shell>;
+  return (
+    <PlayerHost>
+      <Shell>{children}</Shell>
+      <MiniPlayer />
+    </PlayerHost>
+  );
 }

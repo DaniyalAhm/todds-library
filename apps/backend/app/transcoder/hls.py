@@ -57,7 +57,9 @@ def transcode_files_to_hls(
     concat_path = output_path / "concat.txt"
     with open(concat_path, "w") as concat_file:
         for input_path in input_paths:
-            escaped = str(Path(input_path)).replace("'", "\\'")
+            # FFmpeg concat demuxer: single quotes inside a single-quoted
+            # path must be escaped as '\'' (close, escaped, reopen).
+            escaped = str(Path(input_path)).replace("'", "'\\''")
             concat_file.write(f"file '{escaped}'\n")
 
     playlist_path = output_path / "master.m3u8"
@@ -97,6 +99,9 @@ def transcode_files_to_hls(
 
 
 def get_segment(output_dir: str, segment_name: str) -> bytes | None:
+    # Reject traversal characters early
+    if "/" in segment_name or "\\" in segment_name or ".." in segment_name:
+        return None
     segment_path = Path(output_dir) / segment_name
     if not segment_path.is_file():
         return None
@@ -105,8 +110,13 @@ def get_segment(output_dir: str, segment_name: str) -> bytes | None:
     try:
         segment_path = segment_path.resolve(strict=True)
         output_dir_resolved = Path(output_dir).resolve()
-        if not str(segment_path).startswith(str(output_dir_resolved)):
-            return None
+        try:
+            # Python 3.9+: is_relative_to
+            if not segment_path.is_relative_to(output_dir_resolved):
+                return None
+        except AttributeError:
+            if not str(segment_path).startswith(str(output_dir_resolved) + os.sep) and segment_path != output_dir_resolved:
+                return None
     except (ValueError, OSError):
         return None
 

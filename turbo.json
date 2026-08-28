@@ -12,6 +12,9 @@
     },
     "lint": {},
     "typecheck": {},
+    "test": {
+      "outputs": ["coverage/**"]
+    },
     "clean": {
       "cache": false
     }

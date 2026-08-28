@@ -88,10 +88,21 @@ def parse_folder_layout(filepath: Path, library_path: Path) -> dict:
         chapter_parts = parts[2:]
         book_folder_path = library_path.joinpath(*relative_parts[: start + 2])
     elif len(parts) >= 2:
-        author = library_path.name
-        title = parts[0]
-        chapter_parts = parts[1:]
-        book_folder_path = library_path / parts[0]
+        # When library points to a generic container (e.g. /books), parts[0] is the
+        # author and the file lives flat under the author folder. When it points
+        # to an author folder (e.g. /books/Andy Weir), library_path.name is the author.
+        if library_path.name.lower() in container_names:
+            author = parts[0]
+            title = _clean_folder_name(Path(parts[1]).stem)
+            # folder that groups this book – still the author folder for flat files
+            # (audio in a subfolder will have len>=3 and gets the correct /Author/Title path)
+            chapter_parts = parts[1:]
+            book_folder_path = library_path / parts[0]
+        else:
+            author = library_path.name
+            title = parts[0]
+            chapter_parts = parts[1:]
+            book_folder_path = library_path / parts[0]
     else:
         return {}
 

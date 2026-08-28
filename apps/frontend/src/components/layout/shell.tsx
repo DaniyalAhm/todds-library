@@ -4,10 +4,12 @@ import { useState } from 'react';
 import { Sidebar } from './sidebar';
 import { Header } from './header';
 import { cn } from '@/lib/utils';
+import { usePlayer } from '@/hooks/use-player';
 
 export function Shell({ children }: { children: React.ReactNode }) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const { currentBook } = usePlayer();
 
   return (
     <div className="min-h-screen bg-background">
@@ -33,7 +35,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
         )}
       >
         <Header onMenuToggle={() => setMobileSidebarOpen(!mobileSidebarOpen)} />
-        <main className="min-w-0 p-3 sm:p-5 lg:p-8">{children}</main>
+        <main className={cn('min-w-0 p-3 sm:p-5 lg:p-8', currentBook && 'pb-24')}>{children}</main>
       </div>
     </div>
   );

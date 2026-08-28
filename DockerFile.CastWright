@@ -1,0 +1,80 @@
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y \
+    python3.12 \
+    python3.12-venv \
+    python3.12-dev \
+    python3-pip \
+    ffmpeg \
+    git \
+    curl \
+    ca-certificates \
+    build-essential \
+    libsndfile1 \
+    gnupg \
+    libnss3-tools \
+    zstd \
+    && rm -rf /var/lib/apt/lists/*
+
+
+# Node 24
+RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
+    && apt-get install -y nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+#Install Cert
+RUN curl -JLO "https://dl.filippo.io/mkcert/latest?for=linux/amd64" \
+    && chmod +x mkcert-* \
+    && mv mkcert-* /usr/local/bin/mkcert
+
+
+
+WORKDIR /app
+
+COPY Castwright ./
+
+# Disable Husky during Docker build
+ENV HUSKY=0
+
+
+# --------------------------------------------------
+# Node dependencies
+# --------------------------------------------------
+
+RUN npm ci
+
+RUN npm --prefix server ci
+
+
+# --------------------------------------------------
+# Python TTS environment
+# --------------------------------------------------
+
+ENV ACCELERATOR=nvidia
+
+RUN node server/tts-sidecar/scripts/bootstrap-venv.mjs python3.12
+
+
+# --------------------------------------------------
+# Build frontend/backend
+# --------------------------------------------------
+
+RUN npm run build
+
+
+# --------------------------------------------------
+# Runtime configuration
+# --------------------------------------------------
+
+ENV NODE_ENV=production
+ENV BIND_HOST=0.0.0.0
+
+EXPOSE 8443 
+
+
+# Castwright expects server as cwd
+WORKDIR /app/server
+
+CMD ["sh", "-c", "node /app/scripts/setup-lan-certs.mjs --best-effort && cd /app/server && exec node dist/index.js"]

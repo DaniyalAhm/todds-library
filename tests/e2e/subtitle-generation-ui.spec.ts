@@ -57,7 +57,10 @@ test('audiobook player generates subtitles for the current chapter', async ({ br
     )
   ).toBe(true);
   await expect(page.getByText('Generated subtitle text')).toBeVisible();
-  await expect(page.getByText('Subtitles generated')).toBeVisible();
+  // exact: true targets only the toast title — sonner also mirrors the text
+  // into an aria-live region ("Notification Subtitles generated…"), which
+  // would otherwise collide in strict-mode resolution.
+  await expect(page.getByText('Subtitles generated', { exact: true })).toBeVisible();
 });
 
 test('audiobook player highlights active subtitle words from JSON subtitles', async ({ browser }) => {

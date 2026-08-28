@@ -12,3 +12,11 @@ venv/
 *.db
 coverage/
 .turbo/
+# Castwright standalone app + workspace (has its own .git, prevent submodule)
+Castwright/
+castwright-workspace/
+castwright-models/
+castwright_config/
+test-results/
+test-output/
+playwright-report/

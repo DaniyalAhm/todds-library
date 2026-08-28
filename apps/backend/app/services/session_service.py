@@ -78,7 +78,9 @@ async def get_session(session_id: str) -> str | None:
     user_id = payload.get("user_id")
     if not user_id:
         return None
-    await client.expire(f"{SESSION_KEY_PREFIX}{session_id}", _session_ttl_seconds())
+    ttl = _session_ttl_seconds()
+    await client.expire(f"{SESSION_KEY_PREFIX}{session_id}", ttl)
+    await client.expire(f"{USER_SESSIONS_KEY_PREFIX}{user_id}", ttl)
     return str(user_id)
 
 

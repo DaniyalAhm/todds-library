@@ -221,6 +221,8 @@ Copy `.env.example` → `.env`. All variables are optional; sensible defaults ar
 | `MEILI_ENV` | Meilisearch env (`development`/`production`) | `production` |
 | `AUTHENTIK_ISSUER` / `AUTHENTIK_CLIENT_ID` / `AUTHENTIK_CLIENT_SECRET` | Authentik OIDC (leave blank for local auth only) | empty |
 | `SECRET_KEY` | Backend JWT / encryption secret (`openssl rand -hex 32`) | `change_me_in_production` |
+| `ACCESS_TOKEN_TTL` | Access-token lifetime in seconds (media URLs embed this; keep it long enough to survive backgrounding) | `900` |
+| `SESSION_TTL_DAYS` | Redis session-token lifetime in days (sliding TTL, refreshed on use) | `30` |
 | `UVICORN_WORKERS` | Backend worker processes | `1` |
 | `BACKEND_PORT` | Host port for the backend API | `8830` |
 | `RREADING_GLASSES_IMAGE` | Metadata mirror image (Goodreads-backed) | `blampe/rreading-glasses:latest` |

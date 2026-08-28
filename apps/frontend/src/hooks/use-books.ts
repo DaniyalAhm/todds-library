@@ -2,7 +2,7 @@
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useSession } from 'next-auth/react';
-import { api, getApiUrl } from '@/lib/api-client';
+import { api, getAccessToken, getApiUrl } from '@/lib/api-client';
 
 interface BooksQueryParams {
   limit?: number;
@@ -72,25 +72,28 @@ interface Book {
   stream_url: string;
 }
 
-function withAccessToken(url: string, token?: string): string {
+export function withAccessToken(url: string, token?: string | null): string {
   if (!token) return url;
   const nextUrl = new URL(url);
   nextUrl.searchParams.set('access_token', token);
   return nextUrl.toString();
 }
 
-function authConfig(token?: string) {
+function authConfig(token?: string | null) {
   return token ? { headers: { Authorization: `Bearer ${token}` } } : undefined;
 }
 
-function normalizeBook(book: Omit<Book, 'format' | 'cover' | 'download_url' | 'audio_download_url' | 'stream_url'>, token?: string): Book {
+function normalizeBook(book: Omit<Book, 'format' | 'cover' | 'download_url' | 'audio_download_url' | 'stream_url'>, token?: string | null): Book {
+  // Prefer the live in-memory token (kept fresh by the auth keep-alive) so
+  // media URLs are baked with the most recent access token available.
+  const access = getAccessToken() ?? token;
   return {
     ...book,
     format: book.file_format,
-    cover: book.cover_path ? withAccessToken(getApiUrl(`/books/${book.id}/cover`), token) : undefined,
-    download_url: withAccessToken(getApiUrl(`/books/${book.id}/download`), token),
-    audio_download_url: withAccessToken(getApiUrl(`/audiobooks/${book.id}/download`), token),
-    stream_url: withAccessToken(getApiUrl(`/audiobooks/${book.id}/stream`), token),
+    cover: book.cover_path ? withAccessToken(getApiUrl(`/books/${book.id}/cover`), access) : undefined,
+    download_url: withAccessToken(getApiUrl(`/books/${book.id}/download`), access),
+    audio_download_url: withAccessToken(getApiUrl(`/audiobooks/${book.id}/download`), access),
+    stream_url: withAccessToken(getApiUrl(`/audiobooks/${book.id}/stream`), access),
   };
 }
 

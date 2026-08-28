@@ -30,6 +30,20 @@ async def test_session_slides_expiry(redis_client):
 
 
 @pytest.mark.asyncio
+async def test_session_slides_user_session_index_expiry(redis_client):
+    user_id = "user-123"
+    session_id = await session_service.create_session(user_id)
+    ttl = session_service._session_ttl_seconds()
+    user_sessions_key = f"{session_service.USER_SESSIONS_KEY_PREFIX}{user_id}"
+    await session_service.get_client().expire(user_sessions_key, 1)
+
+    await session_service.get_session(session_id)
+
+    remaining = await session_service.get_client().ttl(user_sessions_key)
+    assert 1 < remaining <= ttl
+
+
+@pytest.mark.asyncio
 async def test_revoke_session(redis_client):
     session_id = await session_service.create_session("user-123")
 

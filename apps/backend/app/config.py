@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     authentik_client_id: str = ""
     authentik_client_secret: str = ""
     rreading_glasses_url: str = ""
-    access_token_ttl: int = 60
+    access_token_ttl: int = 900
     session_ttl_days: int = 30
     books_dir: str = "/books"
     covers_dir: str = "/data/covers"
@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     chunk_length_s: int = 30
     vad_filter: bool = False
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
 
 settings = Settings()

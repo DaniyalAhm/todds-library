@@ -1,6 +1,7 @@
 'use client';
 
 import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
 
 interface Chapter {
   id: string;
@@ -9,8 +10,16 @@ interface Chapter {
   end: number;
 }
 
+export interface CurrentBookInfo {
+  id: string;
+  title: string;
+  author?: string | null;
+  cover?: string | null;
+}
+
 interface PlayerState {
   currentBook: string | null;
+  currentBookInfo: CurrentBookInfo | null;
   isPlaying: boolean;
   currentTime: number;
   duration: number;
@@ -32,7 +41,8 @@ interface PlayerActions {
   prevChapter: () => void;
   setSleepTimer: (minutes: number) => void;
   clearSleepTimer: () => void;
-  setCurrentBook: (bookId: string | null) => void;
+  setCurrentBook: (bookId: string | null, info?: CurrentBookInfo | null) => void;
+  setCurrentBookInfo: (info: CurrentBookInfo | null) => void;
   setDuration: (duration: number) => void;
   setCurrentTime: (time: number) => void;
   setChapterIndex: (index: number) => void;
@@ -44,6 +54,7 @@ type PlayerStore = PlayerState & PlayerActions;
 
 const initialState: PlayerState = {
   currentBook: null,
+  currentBookInfo: null,
   isPlaying: false,
   currentTime: 0,
   duration: 0,
@@ -54,58 +65,83 @@ const initialState: PlayerState = {
   sleepTimerEnd: null,
 };
 
-export const usePlayer = create<PlayerStore>((set, get) => ({
-  ...initialState,
+export const usePlayer = create<PlayerStore>()(
+  persist(
+    (set, get) => ({
+      ...initialState,
 
-  play: () => set({ isPlaying: true }),
-  pause: () => set({ isPlaying: false }),
-  togglePlay: () => set((state) => ({ isPlaying: !state.isPlaying })),
+      play: () => set({ isPlaying: true }),
+      pause: () => set({ isPlaying: false }),
+      togglePlay: () => set((state) => ({ isPlaying: !state.isPlaying })),
 
-  seek: (time: number) => {
-    set({ currentTime: Math.max(0, Math.min(time, get().duration)) });
-  },
+      seek: (time: number) => {
+        set({ currentTime: Math.max(0, Math.min(time, get().duration)) });
+      },
 
-  setVolume: (volume: number) => {
-    set({ volume: Math.max(0, Math.min(1, volume)) });
-  },
+      setVolume: (volume: number) => {
+        set({ volume: Math.max(0, Math.min(1, volume)) });
+      },
 
-  setSpeed: (speed: number) => {
-    set({ speed: Math.max(0.5, Math.min(3, speed)) });
-  },
+      setSpeed: (speed: number) => {
+        set({ speed: Math.max(0.5, Math.min(3, speed)) });
+      },
 
-  nextChapter: () => {
-    const { chapterIndex, chapters } = get();
-    if (chapterIndex < chapters.length - 1) {
-      const nextIdx = chapterIndex + 1;
-      set({ chapterIndex: nextIdx, currentTime: chapters[nextIdx].start });
+      nextChapter: () => {
+        const { chapterIndex, chapters } = get();
+        if (chapterIndex < chapters.length - 1) {
+          const nextIdx = chapterIndex + 1;
+          set({ chapterIndex: nextIdx, currentTime: chapters[nextIdx].start });
+        }
+      },
+
+      prevChapter: () => {
+        const { chapterIndex, chapters, currentTime } = get();
+        if (chapters.length === 0) return;
+        const currentChapter = chapters[chapterIndex];
+        if (currentTime - currentChapter.start > 5) {
+          set({ currentTime: currentChapter.start });
+        } else if (chapterIndex > 0) {
+          const prevIdx = chapterIndex - 1;
+          set({ chapterIndex: prevIdx, currentTime: chapters[prevIdx].start });
+        }
+      },
+
+      setSleepTimer: (minutes: number) => {
+        set({ sleepTimerEnd: Date.now() + minutes * 60 * 1000 });
+      },
+
+      clearSleepTimer: () => set({ sleepTimerEnd: null }),
+
+      setCurrentBook: (bookId: string | null, info?: CurrentBookInfo | null) => {
+        if (bookId === null) {
+          set({ currentBook: null, currentBookInfo: null });
+          return;
+        }
+        if (info !== undefined) {
+          set({ currentBook: bookId, currentBookInfo: info });
+        } else {
+          // Keep existing info if not provided (host will update via setCurrentBookInfo)
+          set({ currentBook: bookId });
+        }
+      },
+      setCurrentBookInfo: (info: CurrentBookInfo | null) => set({ currentBookInfo: info }),
+      setDuration: (duration: number) => set({ duration }),
+      setCurrentTime: (time: number) => set({ currentTime: time }),
+      setChapterIndex: (index: number) => {
+        const { chapters } = get();
+        set({ chapterIndex: Math.max(0, Math.min(index, Math.max(0, chapters.length - 1))) });
+      },
+      setChapters: (chapters: Chapter[]) => set({ chapters }),
+      reset: () => set(initialState),
+    }),
+    {
+      name: 'player-store',
+      partialize: (state) => ({
+        currentBook: state.currentBook,
+        currentBookInfo: state.currentBookInfo,
+        volume: state.volume,
+        speed: state.speed,
+      }),
     }
-  },
-
-  prevChapter: () => {
-    const { chapterIndex, chapters, currentTime } = get();
-    if (chapters.length === 0) return;
-    const currentChapter = chapters[chapterIndex];
-    if (currentTime - currentChapter.start > 5) {
-      set({ currentTime: currentChapter.start });
-    } else if (chapterIndex > 0) {
-      const prevIdx = chapterIndex - 1;
-      set({ chapterIndex: prevIdx, currentTime: chapters[prevIdx].start });
-    }
-  },
-
-  setSleepTimer: (minutes: number) => {
-    set({ sleepTimerEnd: Date.now() + minutes * 60 * 1000 });
-  },
-
-  clearSleepTimer: () => set({ sleepTimerEnd: null }),
-
-  setCurrentBook: (bookId: string | null) => set({ currentBook: bookId }),
-  setDuration: (duration: number) => set({ duration }),
-  setCurrentTime: (time: number) => set({ currentTime: time }),
-  setChapterIndex: (index: number) => {
-    const { chapters } = get();
-    set({ chapterIndex: Math.max(0, Math.min(index, Math.max(0, chapters.length - 1))) });
-  },
-  setChapters: (chapters: Chapter[]) => set({ chapters }),
-  reset: () => set(initialState),
-}));
+  )
+);

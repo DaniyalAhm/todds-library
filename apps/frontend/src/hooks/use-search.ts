@@ -2,7 +2,7 @@
 
 import { useQuery } from '@tanstack/react-query';
 import { useSession } from 'next-auth/react';
-import { api, getApiUrl } from '@/lib/api-client';
+import { api, getAccessToken, getApiUrl } from '@/lib/api-client';
 import { useState, useEffect } from 'react';
 
 interface SearchParams {
@@ -17,9 +17,10 @@ export function useSearch(params: SearchParams) {
   const { data: session } = useSession();
 
   const withAccessToken = (url: string) => {
-    if (!session?.accessToken) return url;
+    const token = getAccessToken() ?? session?.accessToken;
+    if (!token) return url;
     const nextUrl = new URL(url);
-    nextUrl.searchParams.set('access_token', session.accessToken);
+    nextUrl.searchParams.set('access_token', token);
     return nextUrl.toString();
   };
 

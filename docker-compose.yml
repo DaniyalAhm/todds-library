@@ -150,11 +150,37 @@ services:
       - backend
     restart: unless-stopped
 
+  castwright:
+    container_name: castwright
+    networks:
+      - ai-net
+    build:
+      context: .
+      dockerfile: ./DockerFile.CastWright
+    volumes:
+      - /mnt/2tb_jellyfin/castwright_audiobooks/:/app/audiobook-workspace
+    ports:
+      - "${CastWright_PORT:-9990}:9990"
+
+    environment:
+      OLLAMA_URL: http://ollama:11434
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0", "1"]
+              capabilities: [gpu]
+
+
 networks:
   internal:
     internal: true
   frontend:
-
+  ai-net:
+    external: true
+    driver: bridge
 volumes:
   pgdata:
   redisdata:

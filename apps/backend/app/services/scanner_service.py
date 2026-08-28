@@ -170,6 +170,12 @@ async def scan_library(
     existing_book_list = list(result.scalars().all())
     existing_books = {b.file_hash: b for b in existing_book_list if b.file_hash}
     existing_books_by_path = {b.file_path: b for b in existing_book_list}
+    existing_by_group_path: dict[str, Book] = {}
+    for b in existing_book_list:
+        meta = b.extra_metadata or {}
+        g = meta.get("group_path") or meta.get("book_folder_path")
+        if g:
+            existing_by_group_path[g] = b
     matched_existing_ids = set()
 
     new_count = 0
@@ -184,9 +190,22 @@ async def scan_library(
         if file_hash in existing_books:
             existing = existing_books[file_hash]
             matched_existing_ids.add(existing.id)
-            if existing.file_size != info["size"]:
+            meta = existing.extra_metadata or {}
+            existing_group = meta.get("group_path") or meta.get("book_folder_path")
+            info_group = info.get("group_path")
+            needs_update = (
+                existing.file_path != info["path"]
+                or existing.file_size != info["size"]
+                or (info_group is not None and existing_group != info_group)
+                or set(meta.get("audio_files") or []) != set(info.get("audio_files") or [])
+                or bool(meta.get("audio_files")) != bool(info.get("audio_files"))
+                or bool(meta.get("ebook_path")) != bool(info.get("ebook_path"))
+            )
+            if needs_update:
                 metadata = await parse_book_file(info["path"], info["format"], str(base_path), info.get("audio_files"))
                 apply_media_variant_metadata(metadata, info)
+                metadata["file_hash"] = file_hash
+                metadata["file_size"] = info["size"]
                 await update_book_in_db(db, existing.id, metadata)
                 await asyncio.to_thread(index_book_in_meili, meili, existing)
                 enrich_ids.append(existing.id)
@@ -194,6 +213,21 @@ async def scan_library(
                 updated_count += 1
         elif info["path"] in existing_books_by_path:
             existing = existing_books_by_path[info["path"]]
+            matched_existing_ids.add(existing.id)
+            metadata = await parse_book_file(info["path"], info["format"], str(base_path), info.get("audio_files"))
+            apply_media_variant_metadata(metadata, info)
+            metadata["file_hash"] = file_hash
+            metadata["file_size"] = info["size"]
+            await update_book_in_db(db, existing.id, metadata)
+            await asyncio.to_thread(index_book_in_meili, meili, existing)
+            enrich_ids.append(existing.id)
+            updated_ids.append(existing.id)
+            updated_count += 1
+        elif info.get("group_path") and info["group_path"] in existing_by_group_path:
+            # Book moved or gained companion files (e.g. epub moved into folder
+            # with audio, or audio added) – combined hash differs so neither
+            # file_hash nor file_path matches, but group_path is stable.
+            existing = existing_by_group_path[info["group_path"]]
             matched_existing_ids.add(existing.id)
             metadata = await parse_book_file(info["path"], info["format"], str(base_path), info.get("audio_files"))
             apply_media_variant_metadata(metadata, info)
@@ -338,6 +372,18 @@ async def parse_book_file(
             chapter_metadata = parse_filename(audio_file, library_path)
             parsed_audio = parse_audio(audio_file)
             duration = parsed_audio.get("duration") or 0
+            # Fallback to ffprobe when mutagen cannot determine duration
+            # (e.g. wma, degraded files). Without this, total duration is 0
+            # and iPad chapter seeking breaks (end_position == start_position).
+            if duration == 0:
+                try:
+                    from app.services.audio_health_service import check_audio_file
+
+                    health = check_audio_file(audio_file, full_decode=False)
+                    if health.duration and health.duration > 0:
+                        duration = health.duration
+                except Exception:
+                    pass
             metadata["duration"] += duration
             metadata["chapters"].append(
                 {
@@ -352,6 +398,17 @@ async def parse_book_file(
     if fmt in (BookFormat.mp3, BookFormat.m4b, BookFormat.flac, BookFormat.ogg, BookFormat.aac, BookFormat.wma) or audio_files:
         audio_targets = audio_files or [file_path]
         metadata["audio_health"] = await asyncio.to_thread(build_health_dict, audio_targets)
+        # Single-file fallback: mutagen may return None for wma/corrupt;
+        # use ffprobe duration so Book.duration is never 0/None for iPad.
+        if not audio_files and not metadata.get("duration"):
+            try:
+                from app.services.audio_health_service import check_audio_file as _check
+
+                h = _check(file_path, full_decode=False)
+                if h.duration and h.duration > 0:
+                    metadata["duration"] = h.duration
+            except Exception:
+                pass
 
     return metadata
 
@@ -454,8 +511,8 @@ async def update_book_in_db(
         raise ValueError(f"Book {book_id} not found")
 
     for key in ("title", "author", "series", "series_index", "isbn", "asin",
-                 "description", "publisher", "published_date", "language",
-                 "page_count", "duration", "file_size", "file_hash"):
+                  "description", "publisher", "published_date", "language",
+                  "page_count", "duration", "file_path", "file_size", "file_hash"):
         if key in metadata:
             setattr(book, key, metadata[key])
     if any(
@@ -482,6 +539,20 @@ async def update_book_in_db(
             book.file_format = BookFormat.unknown
 
     if "chapters" in metadata:
+        # chapters are referenced by subtitle_metadata and generation_logs;
+        # must clear dependents before deleting chapters to avoid FK violation.
+        from app.models.generation_log import GenerationLog
+        from app.models.subtitle import SubtitleMetadata
+
+        if book.chapters:
+            old_ids = [c.id for c in list(book.chapters)]
+            if old_ids:
+                await db.execute(delete(SubtitleMetadata).where(SubtitleMetadata.chapter_id.in_(old_ids)))
+                await db.execute(
+                    delete(GenerationLog).where(GenerationLog.chapter_id.in_(old_ids))
+                )
+                # some generation_logs may have been created with only book_id
+                await db.flush()
         book.chapters.clear()
         for i, ch in enumerate(metadata["chapters"]):
             book.chapters.append(Chapter(
@@ -502,6 +573,14 @@ async def remove_book_from_db(db: AsyncSession, book_id: UUID) -> None:
     )
     book = result.scalar_one_or_none()
     if book:
+        from app.models.generation_log import GenerationLog
+        from app.models.subtitle import SubtitleMetadata
+
+        await db.execute(delete(SubtitleMetadata).where(SubtitleMetadata.book_id == book_id))
+        chapter_ids_subq = select(Chapter.id).where(Chapter.book_id == book_id)
+        await db.execute(delete(SubtitleMetadata).where(SubtitleMetadata.chapter_id.in_(chapter_ids_subq)))
+        await db.execute(delete(GenerationLog).where(GenerationLog.book_id == book_id))
+        await db.execute(delete(GenerationLog).where(GenerationLog.chapter_id.in_(chapter_ids_subq)))
         await db.execute(delete(MetadataCache).where(MetadataCache.book_id == book_id))
         await db.execute(delete(ReadingProgress).where(ReadingProgress.book_id == book_id))
         await db.execute(delete(Bookmark).where(Bookmark.book_id == book_id))

@@ -5,7 +5,10 @@ import { SessionProvider, signOut, useSession } from 'next-auth/react';
 import { useEffect, useState } from 'react';
 import { Toaster } from '@/components/ui/toast';
 import { setAuthSession, setUnauthorizedHandler } from '@/lib/api-client';
+import { AuthKeepAlive } from '@/hooks/use-auth-keepalive';
+import { Reconnect } from '@/hooks/use-reconnect';
 import { routes } from '@/lib/routes';
+import { registerServiceWorker } from '@/lib/service-worker';
 
 function SessionTokenBridge() {
   const { data: session, status } = useSession();
@@ -32,16 +35,25 @@ export function Providers({ children }: { children: React.ReactNode }) {
           queries: {
             staleTime: 60 * 1000,
             retry: 1,
-            refetchOnWindowFocus: false,
+            // Re-fetch when the tab/app regains focus or becomes visible again.
+            // Returning from a backgrounded mobile tab otherwise leaves the app
+            // showing stale data on dead connections until a manual reload.
+            refetchOnWindowFocus: true,
           },
         },
       })
   );
 
+  useEffect(() => {
+    registerServiceWorker();
+  }, []);
+
   return (
-    <SessionProvider refetchOnWindowFocus={false}>
+    <SessionProvider refetchOnWindowFocus>
       <QueryClientProvider client={queryClient}>
         <SessionTokenBridge />
+        <AuthKeepAlive />
+        <Reconnect />
         {children}
         <Toaster />
       </QueryClientProvider>

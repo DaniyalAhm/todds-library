@@ -14,6 +14,7 @@ import { toast } from '@/components/ui/toast';
 import { Captions, CaptionsOff, Headphones, ListTree, Maximize, Minimize, PanelTop, Pause, Play, RefreshCw, SkipBack, SkipForward } from 'lucide-react';
 import { SubtitleOverlay, loadSubtitleFile } from '@/components/reader/subtitle-overlay';
 import type { SubtitleCue } from '@/components/reader/subtitle-overlay';
+import { logger } from '@/lib/logger';
 
 interface AudiobookPlayerProps {
   bookId: string;
@@ -89,16 +90,76 @@ export function AudiobookPlayer({ bookId }: AudiobookPlayerProps) {
   }, [chapterIndex, chapters, bookId, audio.isMultiTrackDirect]);
 
   useEffect(() => {
+    const getFsElement = () => document.fullscreenElement || (document as any).webkitFullscreenElement || null;
     const onFullscreenChange = () => {
-      setIsFullscreen(!!document.fullscreenElement);
+      const el = getFsElement();
+      const nowFullscreen = !!el;
+      setIsFullscreen(nowFullscreen);
+      if (nowFullscreen) {
+        setShowFullscreenControls(true);
+        if (fullscreenControlsTimerRef.current) clearTimeout(fullscreenControlsTimerRef.current);
+        fullscreenControlsTimerRef.current = setTimeout(() => setShowFullscreenControls(false), 3000);
+      } else {
+        setShowFullscreenControls(true);
+        if (fullscreenControlsTimerRef.current) {
+          clearTimeout(fullscreenControlsTimerRef.current);
+          fullscreenControlsTimerRef.current = null;
+        }
+      }
+    };
+    const onFullscreenError = () => {
+      toast({ title: 'Fullscreen failed', description: 'Browser blocked fullscreen (check secure context / permissions)', variant: 'destructive' });
     };
     document.addEventListener('fullscreenchange', onFullscreenChange);
-    return () => document.removeEventListener('fullscreenchange', onFullscreenChange);
+    document.addEventListener('webkitfullscreenchange', onFullscreenChange as any);
+    document.addEventListener('fullscreenerror', onFullscreenError as any);
+    document.addEventListener('webkitfullscreenerror', onFullscreenError as any);
+    return () => {
+      document.removeEventListener('fullscreenchange', onFullscreenChange);
+      document.removeEventListener('webkitfullscreenchange', onFullscreenChange as any);
+      document.removeEventListener('fullscreenerror', onFullscreenError as any);
+      document.removeEventListener('webkitfullscreenerror', onFullscreenError as any);
+      if (fullscreenControlsTimerRef.current) {
+        clearTimeout(fullscreenControlsTimerRef.current);
+        fullscreenControlsTimerRef.current = null;
+      }
+    };
   }, []);
 
-  const toggleFullscreen = () => {
-    if (document.fullscreenElement) document.exitFullscreen();
-    else containerRef.current?.requestFullscreen();
+  const toggleFullscreen = async () => {
+    try {
+      const fsEl = document.fullscreenElement || (document as any).webkitFullscreenElement;
+      if (fsEl) {
+        if (document.exitFullscreen) await document.exitFullscreen();
+        else if ((document as any).webkitExitFullscreen) await (document as any).webkitExitFullscreen();
+        return;
+      }
+      if (!document.fullscreenEnabled && !(document as any).webkitFullscreenEnabled) {
+        toast({ title: 'Fullscreen not supported', description: 'This browser or context blocks fullscreen', variant: 'destructive' });
+        return;
+      }
+      const el = containerRef.current;
+      if (!el) return;
+      // Debounce rapid double-click: ignore if already pending (element has pending request)
+      if ((el as any)._fsPending) return;
+      (el as any)._fsPending = true;
+      try {
+        if (el.requestFullscreen) {
+          await el.requestFullscreen();
+          logger.fs.info('requestFullscreen succeeded (secure:', window.isSecureContext, 'protocol:', location.protocol, ')');
+        } else if ((el as any).webkitRequestFullscreen) {
+          await (el as any).webkitRequestFullscreen();
+          logger.fs.info('webkitRequestFullscreen succeeded');
+        } else toast({ title: 'Fullscreen not supported', variant: 'destructive' });
+      } finally {
+        setTimeout(() => {
+          if (el) (el as any)._fsPending = false;
+        }, 500);
+      }
+    } catch (err: any) {
+      logger.fs.warn('Fullscreen toggle failed:', err);
+      toast({ title: 'Fullscreen failed', description: err?.message || 'Browser blocked fullscreen. Use secure context (https/localhost) and user gesture.', variant: 'destructive' });
+    }
   };
 
   const startControlsTimer = () => {
@@ -310,7 +371,7 @@ export function AudiobookPlayer({ bookId }: AudiobookPlayerProps) {
           <div className="relative flex flex-1 items-center justify-center">
             {captionsEnabled ? <SubtitleOverlay currentTime={subtitleTime} cues={cues} mode="fullscreen" /> : <p className="text-center text-xl text-white/50">Captions disabled</p>}
           </div>
-          <div className={cn('relative transition-opacity duration-300', showFullscreenControls ? 'opacity-100' : 'opacity-0')}>
+          <div className={cn('relative transition-opacity duration-300', showFullscreenControls ? 'opacity-100' : 'opacity-0 pointer-events-none')}>
             <div className="flex items-center justify-between bg-gradient-to-t from-black/80 to-transparent px-4 pb-6 pt-12">
               <div className="flex items-center gap-3">
                 <button type="button" onClick={audio.prevChapter} className="rounded p-2 text-white/80 hover:bg-white/10 hover:text-white">

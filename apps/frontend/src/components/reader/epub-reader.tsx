@@ -27,6 +27,7 @@ import {
   Type,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { logger } from '@/lib/logger';
 
 interface EpubReaderProps {
   bookId: string;
@@ -128,7 +129,7 @@ export function EpubReader({ bookId }: EpubReaderProps) {
         }
       });
     } catch (err) {
-      console.error('Failed to load epub:', err);
+      logger.player.error('Failed to load epub:', err);
       setLoadError('Book file failed to load.');
     }
   }, [book?.download_url]);
@@ -166,12 +167,24 @@ export function EpubReader({ bookId }: EpubReaderProps) {
   }, [fontSize]);
 
   useEffect(() => {
+    const getFsElement = () => document.fullscreenElement || (document as any).webkitFullscreenElement || null;
     const onFullscreenChange = () => {
-      setIsFullscreen(!!document.fullscreenElement);
+      setIsFullscreen(!!getFsElement());
       setShowToolbar(true);
     };
+    const onFullscreenError = () => {
+      logger.fs.warn('Fullscreen failed (epub) fullscreenEnabled:', document.fullscreenEnabled, 'secure:', window.isSecureContext);
+    };
     document.addEventListener('fullscreenchange', onFullscreenChange);
-    return () => document.removeEventListener('fullscreenchange', onFullscreenChange);
+    document.addEventListener('webkitfullscreenchange', onFullscreenChange as any);
+    document.addEventListener('fullscreenerror', onFullscreenError as any);
+    document.addEventListener('webkitfullscreenerror', onFullscreenError as any);
+    return () => {
+      document.removeEventListener('fullscreenchange', onFullscreenChange);
+      document.removeEventListener('webkitfullscreenchange', onFullscreenChange as any);
+      document.removeEventListener('fullscreenerror', onFullscreenError as any);
+      document.removeEventListener('webkitfullscreenerror', onFullscreenError as any);
+    };
   }, []);
 
   useEffect(() => {
@@ -216,11 +229,32 @@ export function EpubReader({ bookId }: EpubReaderProps) {
     }
   };
 
-  const toggleFullscreen = () => {
-    if (document.fullscreenElement) {
-      document.exitFullscreen();
-    } else {
-      viewerRef.current?.requestFullscreen();
+  const toggleFullscreen = async () => {
+    try {
+      const fsEl = document.fullscreenElement || (document as any).webkitFullscreenElement;
+      if (fsEl) {
+        if (document.exitFullscreen) await document.exitFullscreen();
+        else if ((document as any).webkitExitFullscreen) await (document as any).webkitExitFullscreen();
+        return;
+      }
+      if (!document.fullscreenEnabled && !(document as any).webkitFullscreenEnabled) {
+        logger.fs.warn('Fullscreen not supported / blocked (secure:', window.isSecureContext, 'protocol:', location.protocol, ')');
+        return;
+      }
+      const el = viewerRef.current;
+      if (!el) return;
+      if ((el as any)._fsPending) return;
+      (el as any)._fsPending = true;
+      try {
+        if (el.requestFullscreen) await el.requestFullscreen();
+        else if ((el as any).webkitRequestFullscreen) await (el as any).webkitRequestFullscreen();
+      } finally {
+        setTimeout(() => {
+          if (el) (el as any)._fsPending = false;
+        }, 500);
+      }
+    } catch (err: any) {
+      logger.fs.warn('Fullscreen toggle failed:', err);
     }
   };
 

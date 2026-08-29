@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 import time
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 def transcode_to_hls(
@@ -13,6 +16,7 @@ def transcode_to_hls(
     output_path.mkdir(parents=True, exist_ok=True)
 
     playlist_path = output_path / "master.m3u8"
+    logger.info("[bold cyan][HLS][/] ffmpeg single: %s -> %s", input_path, playlist_path)
 
     # HLS v4 with MPEG-TS segments
     cmd = [
@@ -63,6 +67,7 @@ def transcode_files_to_hls(
             concat_file.write(f"file '{escaped}'\n")
 
     playlist_path = output_path / "master.m3u8"
+    logger.info("[bold cyan][HLS][/] ffmpeg concat: %s files -> %s", len(input_paths), playlist_path)
     cmd = [
         "ffmpeg",
         "-f", "concat",

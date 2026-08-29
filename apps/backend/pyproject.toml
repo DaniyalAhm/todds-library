@@ -31,6 +31,7 @@ dependencies = [
     "faster-whisper>=1.1.0",
     "ctranslate2>=4.5.0",
     "nvidia-cudnn-cu12>=9.0,<10.0",
+    "rich>=13.0.0",
 ]
 
 [project.optional-dependencies]

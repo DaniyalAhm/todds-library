@@ -15,10 +15,15 @@ from app.config import settings
 from app.database import init_db
 from app.services.session_service import close_redis, init_redis
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
+try:
+    from app.utils.colored_logging import setup_colored_logging
+
+    setup_colored_logging(logging.INFO)
+except Exception:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
 
 
 @asynccontextmanager

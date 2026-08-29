@@ -67,7 +67,7 @@ async def get_or_create_hls_playlist(book: Book) -> str | None:
     # If book declares multi-track but none of the files exist on disk, fail
     # fast instead of falling back to a non-audio file_path (e.g. epub).
     if isinstance(declared_audio_files, list) and len(declared_audio_files) > 0 and not audio_files:
-        logger.warning("HLS requested for %s but no declared audio files exist on disk", book.id)
+        logger.warning("[bold cyan][HLS][/] requested for %s but no declared audio files exist on disk", book.id)
         return None
     if not audio_files and book.file_format.value not in ("mp3", "m4b", "flac", "ogg", "aac", "wma"):
         return None
@@ -77,6 +77,7 @@ async def get_or_create_hls_playlist(book: Book) -> str | None:
     output_dir = HLS_DIR / str(book.id)
     output_dir.mkdir(parents=True, exist_ok=True)
     playlist_path = output_dir / "master.m3u8"
+    logger.info("[bold cyan][HLS][/] request book=%s title='%s' files=%s", book.id, book.title, len(audio_files))
     # Invalidate stale playlist when source files changed since generation
     if _playlist_is_valid(playlist_path) and _playlist_is_stale(playlist_path, audio_files):
         try:
@@ -84,9 +85,11 @@ async def get_or_create_hls_playlist(book: Book) -> str | None:
         except OSError:
             pass
     if _playlist_is_valid(playlist_path):
+        logger.info("[green][HLS][/] cache hit book=%s", book.id)
         return str(playlist_path)
     # Remove stale/empty playlist so transcode can recreate it
     if playlist_path.is_file() and not _playlist_is_valid(playlist_path):
+        logger.warning("[bold yellow][HLS][/] invalid playlist book=%s -> removing", book.id)
         try:
             playlist_path.unlink(missing_ok=True)
         except OSError:
@@ -94,6 +97,7 @@ async def get_or_create_hls_playlist(book: Book) -> str | None:
 
     async with _hls_lock(str(book.id)):
         if _playlist_is_valid(playlist_path) and not _playlist_is_stale(playlist_path, audio_files):
+            logger.info("[green][HLS][/] cache hit (locked) book=%s", book.id)
             return str(playlist_path)
         if playlist_path.is_file() and (not _playlist_is_valid(playlist_path) or _playlist_is_stale(playlist_path, audio_files)):
             try:
@@ -101,9 +105,12 @@ async def get_or_create_hls_playlist(book: Book) -> str | None:
             except OSError:
                 pass
         try:
-            return await _transcode_for_book(book, audio_files, str(output_dir))
+            logger.info("[bold cyan][HLS][/] transcoding book=%s files=%s", book.id, len(audio_files))
+            result = await _transcode_for_book(book, audio_files, str(output_dir))
+            logger.info("[green][HLS][/] transcode success book=%s -> %s", book.id, result)
+            return result
         except Exception:
-            logger.exception("HLS transcode failed for %s; attempting audio repair", book.id)
+            logger.exception("[bold red][HLS][/] transcode failed for %s; attempting repair", book.id)
 
         # Repair: handle both multi-track and single-file sources
         sources_for_repair = audio_files if audio_files else ([book.file_path] if book.file_path else [])
@@ -111,9 +118,12 @@ async def get_or_create_hls_playlist(book: Book) -> str | None:
         if repaired is None:
             return None
         try:
-            return await _transcode_for_book(book, repaired, str(output_dir))
+            logger.info("[bold cyan][HLS][/] retry transcode after repair book=%s", book.id)
+            result = await _transcode_for_book(book, repaired, str(output_dir))
+            logger.info("[green][HLS][/] retry success book=%s", book.id)
+            return result
         except Exception:
-            logger.exception("HLS transcode failed for %s even after repair", book.id)
+            logger.exception("[bold red][HLS][/] transcode failed even after repair book=%s", book.id)
             return None
 
 

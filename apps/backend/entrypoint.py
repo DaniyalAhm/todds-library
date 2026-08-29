@@ -2,11 +2,15 @@ import os
 import logging
 import uvicorn
 
+try:
+    from app.utils.colored_logging import setup_colored_logging
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
+    setup_colored_logging(logging.INFO)
+except Exception:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
 logger = logging.getLogger(__name__)
 
 

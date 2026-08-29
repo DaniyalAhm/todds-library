@@ -53,7 +53,9 @@ async def scan_library(
 
     base_path = Path(library.path)
     if not base_path.is_dir():
+        logger.warning("[bold yellow][SCANNER][/] library path not found: %s", library.path)
         return {"new": 0, "updated": 0, "removed": 0}
+    logger.info("[bold yellow][SCANNER][/] scanning library '%s' at %s", library.name, library.path)
 
     # Walk directory and find all book files. Companion ebook/audio files are
     # considered for mixed-media merging even when the library type is ebook or
@@ -257,10 +259,10 @@ async def scan_library(
         book = result.scalar_one_or_none()
         if book:
             had_asin = bool(book.asin)
-            logger.info("enrichment: book=%s title='%s' asin=%s", book.id, book.title, book.asin)
+            logger.info("[bold yellow][SCANNER][/] enrichment: book=%s title='%s' asin=%s", book.id, book.title, book.asin)
             await enrich_book_metadata(db, book)
             if not had_asin and book.asin:
-                logger.info("enrichment: book=%s got asin=%s — second pass for chapter data", book.id, book.asin)
+                logger.info("[bold yellow][SCANNER][/] enrichment: book=%s got asin=%s — second pass for chapter data", book.id, book.asin)
                 await enrich_book_metadata(db, book)
 
     # Remove books that no longer have files
@@ -272,6 +274,7 @@ async def scan_library(
             await asyncio.to_thread(remove_book_from_meili, meili, book.id)
             removed_count += 1
 
+    logger.info("[bold green][SCANNER][/] scan complete new=%s updated=%s removed=%s", new_count, updated_count, removed_count)
     return {
         "new": new_count,
         "updated": updated_count,

@@ -14,6 +14,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.models.user import User
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 _jwks_cache: dict | None = None
@@ -125,9 +129,12 @@ async def get_user_by_id(db: AsyncSession, user_id: UUID) -> User | None:
 async def authenticate_user(db: AsyncSession, username: str, password: str) -> User | None:
     user = await get_user_by_username(db, username)
     if user is None:
+        logger.warning("[bold blue][AUTH][/] login failed: unknown user '%s'", username)
         return None
     if not verify_password(password, user.hashed_password):
+        logger.warning("[bold blue][AUTH][/] login failed: bad password for '%s'", username)
         return None
+    logger.info("[bold blue][AUTH][/] login success: '%s' (id=%s)", username, user.id)
     return user
 
 
@@ -140,23 +147,28 @@ async def get_or_create_authentik_user(db: AsyncSession, claims: dict) -> User:
     )
     user = result.scalar_one_or_none()
     if user is None:
+        username = claims.get("preferred_username", claims.get("username", "unknown"))
+        logger.info("[bold blue][AUTH][/] creating authentik user sub=%s username='%s'", authentik_sub, username)
         user = User(
             authentik_sub=str(authentik_sub),
-            username=claims.get("preferred_username", claims.get("username", "unknown")),
+            username=username,
             email=claims.get("email", ""),
             is_admin=claims.get("is_admin", False),
         )
         db.add(user)
         await db.commit()
         await db.refresh(user)
+        logger.info("[green][AUTH][/] created user '%s' id=%s", user.username, user.id)
     else:
         needs_update = False
         new_username = claims.get("preferred_username", claims.get("username"))
         new_email = claims.get("email")
         if new_username and user.username != new_username:
+            logger.info("[bold blue][AUTH][/] updating username %s -> %s", user.username, new_username)
             user.username = new_username
             needs_update = True
         if new_email and user.email != new_email:
+            logger.info("[bold blue][AUTH][/] updating email for '%s'", user.username)
             user.email = new_email
             needs_update = True
         if needs_update:

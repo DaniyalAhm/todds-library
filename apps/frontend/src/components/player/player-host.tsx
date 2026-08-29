@@ -7,6 +7,7 @@ import { clearProgress, enqueueProgress, type ProgressSnapshot } from '@/lib/pro
 import { usePlayer } from '@/hooks/use-player';
 import { useMediaSession } from '@/hooks/use-media-session';
 import { AudioPlayerContext } from './audio-player-context';
+import { logger } from '@/lib/logger';
 
 export function PlayerHost({ children }: { children?: React.ReactNode }) {
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -27,6 +28,7 @@ export function PlayerHost({ children }: { children?: React.ReactNode }) {
   const resumeCheckTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const userPauseRequestedRef = useRef(false);
   const audioSetupKeyRef = useRef<string | null>(null);
+  const hlsStallTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const {
     currentBook: bookId,
@@ -114,12 +116,19 @@ export function PlayerHost({ children }: { children?: React.ReactNode }) {
   const trackForPosition = useCallback(
     (position: number) => {
       if (chapters.length === 0) return 0;
+      if (!Number.isFinite(position) || position <= 0) return 0;
+      if (position >= (duration || Number.MAX_SAFE_INTEGER)) return Math.max(0, chapters.length - 1);
       const index = chapters.findIndex(
         (chapter, idx) => position >= chapter.start && position < (chapters[idx + 1]?.start ?? Number.POSITIVE_INFINITY)
       );
-      return Math.max(0, index);
+      if (index !== -1) return index;
+      // Fallback: position within last chapter's start/end even if end==start (zero-duration)
+      for (let i = chapters.length - 1; i >= 0; i--) {
+        if (position >= chapters[i].start) return i;
+      }
+      return 0;
     },
-    [chapters]
+    [chapters, duration]
   );
 
   const withFreshToken = useCallback((url: string): string => {
@@ -271,6 +280,34 @@ export function PlayerHost({ children }: { children?: React.ReactNode }) {
       }
       setTriedHls(true);
       setLoadError('');
+      // Clear any prior stall timer
+      if (hlsStallTimerRef.current) {
+        clearTimeout(hlsStallTimerRef.current);
+        hlsStallTimerRef.current = null;
+      }
+      // Fast preflight: if manifest returns 500 or missing segments, fall back to direct immediately
+      // (covers single-file wma/m4b where HLS transcode fails on desktop)
+      try {
+        const controller = new AbortController();
+        const t = setTimeout(() => controller.abort(), 5000);
+        const probeRes = await fetch(withFreshToken(book.stream_url), { signal: controller.signal });
+        clearTimeout(t);
+        if (!probeRes.ok) {
+          logger.hls.warn('manifest probe failed, falling back to direct:', probeRes.status);
+          setupDirectAudio();
+          return;
+        }
+        const text = await probeRes.text();
+        if (!text.includes('segment_')) {
+          logger.hls.warn('manifest missing segments, falling back to direct');
+          setupDirectAudio();
+          return;
+        }
+      } catch (probeErr) {
+        logger.hls.warn('manifest probe error, falling back to direct:', probeErr);
+        setupDirectAudio();
+        return;
+      }
       try {
         const Hls = (await import('hls.js')).default;
         if (Hls.isSupported()) {
@@ -289,26 +326,50 @@ export function PlayerHost({ children }: { children?: React.ReactNode }) {
           setAudioSrc('');
           hlsRef.current.loadSource(withFreshToken(book.stream_url));
           hlsRef.current.attachMedia(audio);
+          let manifestParsed = false;
           hlsRef.current.on(Hls.Events.MANIFEST_PARSED, () => {
+            manifestParsed = true;
+            if (hlsStallTimerRef.current) {
+              clearTimeout(hlsStallTimerRef.current);
+              hlsStallTimerRef.current = null;
+            }
             hlsRetryRef.current = false;
             setDuration(audio.duration || 0);
             audio.play().catch(() => undefined);
           });
           hlsRef.current.on(Hls.Events.ERROR, (_event: unknown, data: any) => {
-            if (data?.fatal) fatalErrorRef.current();
+            if (data?.fatal) {
+              if (hlsStallTimerRef.current) {
+                clearTimeout(hlsStallTimerRef.current);
+                hlsStallTimerRef.current = null;
+              }
+              fatalErrorRef.current();
+            }
           });
+          // Stall fallback: if no manifest parsed after 12s, fallback to direct
+          hlsStallTimerRef.current = setTimeout(() => {
+            if (!manifestParsed) {
+              logger.hls.warn('manifest parsing stalled after 12s, falling back to direct');
+              if (hlsRef.current) {
+                hlsRef.current.destroy();
+                hlsRef.current = null;
+              }
+              fallbackToDirect();
+            }
+          }, 12000);
           return;
         }
         if (audio.canPlayType('application/vnd.apple.mpegurl')) {
+          // Native HLS (Safari) — also probe already succeeded, so set src directly
           setAudioSrc(withFreshToken(book.stream_url));
           return;
         }
       } catch (err) {
-        console.error('Failed to start HLS stream:', err);
+        logger.hls.error('Failed to start HLS stream:', err);
       }
       setupDirectAudio();
     },
-    [book?.stream_url, prefersDirectPlayback, setDuration, setupDirectAudio, triedHls, withFreshToken]
+    [book?.stream_url, fallbackToDirect, prefersDirectPlayback, setDuration, setupDirectAudio, triedHls, withFreshToken]
   );
 
   const retryStream = useCallback(async () => {
@@ -479,6 +540,10 @@ export function PlayerHost({ children }: { children?: React.ReactNode }) {
         hlsRef.current.destroy();
         hlsRef.current = null;
       }
+      if (hlsStallTimerRef.current) {
+        clearTimeout(hlsStallTimerRef.current);
+        hlsStallTimerRef.current = null;
+      }
       setAudioSrc('');
       setLoadError('');
       return;
@@ -488,6 +553,10 @@ export function PlayerHost({ children }: { children?: React.ReactNode }) {
       if (hlsRef.current) {
         hlsRef.current.destroy();
         hlsRef.current = null;
+      }
+      if (hlsStallTimerRef.current) {
+        clearTimeout(hlsStallTimerRef.current);
+        hlsStallTimerRef.current = null;
       }
     };
   }, [setupAudio, bookId]);
@@ -555,9 +624,12 @@ export function PlayerHost({ children }: { children?: React.ReactNode }) {
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio || seekAfterTrackLoadRef.current === null) return;
-    const nextTime = seekAfterTrackLoadRef.current;
-    seekAfterTrackLoadRef.current = null;
-    audio.currentTime = nextTime;
+    // Only apply immediately if we have metadata; otherwise defer to onLoadedMetadata
+    if (audio.readyState >= 1) {
+      const nextTime = seekAfterTrackLoadRef.current;
+      seekAfterTrackLoadRef.current = null;
+      audio.currentTime = nextTime;
+    }
   }, [audioSrc]);
 
   // chapter index sync
@@ -570,37 +642,58 @@ export function PlayerHost({ children }: { children?: React.ReactNode }) {
     }
   }, [currentTime, chapters, chapterIndex, duration, setChapterIndex]);
 
-  // Media session + keep-alive queues
-  const handleSeekRelative = useCallback(
-    (delta: number) => {
-      const audio = audioRef.current;
-      if (!audio) return;
-      const newTime = Math.max(0, Math.min(audio.duration || 0, audio.currentTime + delta));
-      audio.currentTime = newTime;
-    },
-    []
-  );
+  // Media session + keep-alive queues — placeholder, real impl after formatSeek (cross-track aware)
+  // handleSeekRelative is defined after formatSeek to avoid circular deps
 
   const formatSeek = useCallback(
     (time: number) => {
-      seek(time);
+      const clamped = Number.isFinite(time) ? Math.max(0, Math.min(time, duration || Number.MAX_SAFE_INTEGER)) : 0;
+      seek(clamped);
       if (isMultiTrackDirect) {
-        const nextTrackIndex = trackForPosition(time);
-        const localTime = Math.max(0, time - trackStart(nextTrackIndex));
+        const nextTrackIndex = trackForPosition(clamped);
+        const localTime = Math.max(0, clamped - trackStart(nextTrackIndex));
         if (nextTrackIndex !== trackIndex) {
+          // Invalidate setupKey so setupAudio does not block track switch
+          audioSetupKeyRef.current = null;
           seekAfterTrackLoadRef.current = localTime;
+          // Keep chapterIndex in sync with track for Dune (1:1 track:chapter)
+          setChapterIndex(nextTrackIndex);
           setTrackIndex(nextTrackIndex);
           setAudioSrc(audioUrlForTrack(nextTrackIndex));
+          // Force load for new track src (raw audio does not auto-load on src prop change)
+          window.setTimeout(() => {
+            const a = audioRef.current;
+            if (a) {
+              a.load();
+              if (isPlayingRef.current) void a.play().catch(() => undefined);
+            }
+          }, 0);
           return;
         }
         const audio = audioRef.current;
-        if (audio) audio.currentTime = localTime;
+        if (audio) {
+          // If audio not yet ready, defer via seekAfterTrackLoadRef (handled in onLoadedMetadata)
+          if (audio.readyState >= 1) audio.currentTime = localTime;
+          else seekAfterTrackLoadRef.current = localTime;
+        }
         return;
       }
       const audio = audioRef.current;
-      if (audio) audio.currentTime = time;
+      if (audio) {
+        if (audio.readyState >= 1) audio.currentTime = clamped;
+        else seekAfterTrackLoadRef.current = clamped;
+      }
     },
-    [seek, isMultiTrackDirect, trackForPosition, trackStart, trackIndex, audioUrlForTrack]
+    [seek, isMultiTrackDirect, trackForPosition, trackStart, trackIndex, audioUrlForTrack, duration, setChapterIndex]
+  );
+
+  // Cross-track aware rewind/forward: uses global currentTime + delta then delegates to formatSeek
+  const handleSeekRelative = useCallback(
+    (delta: number) => {
+      const target = Math.max(0, Math.min(duration || Number.MAX_SAFE_INTEGER, currentTime + delta));
+      formatSeek(target);
+    },
+    [currentTime, duration, formatSeek]
   );
 
   const handleNativeAudioSeek = useCallback(
@@ -748,6 +841,7 @@ export function PlayerHost({ children }: { children?: React.ReactNode }) {
       if (seekAfterTrackLoadRef.current !== null) {
         audio.currentTime = seekAfterTrackLoadRef.current;
         seekAfterTrackLoadRef.current = null;
+        if (isPlayingRef.current) void audio.play().catch(() => undefined);
       }
     },
     [isMultiTrackDirect, setDuration]
@@ -763,10 +857,19 @@ export function PlayerHost({ children }: { children?: React.ReactNode }) {
   const handleError = useCallback(() => {
     const audio = audioRef.current;
     const currentSrc = audio?.currentSrc || audioSrc;
-    if (!currentSrc || (hlsRef.current && !audioSrc)) return;
+    if (!currentSrc) return;
+    // When hls.js is attached (audioSrc === '' but hls owns MediaSource), ignore spurious
+    // empty-src errors but still handle real decode errors (error.code !== 0)
+    if (hlsRef.current && !audioSrc) {
+      if (!audio?.error || audio.error.code === 0) return;
+    }
     capturePositionForReload();
+    // For native HLS url (canPlayType) currentSrc will be blob-free stream url
     if (book?.audio_download_url && isHlsStreamUrl(currentSrc)) fallbackToDirect();
-    else if (!triedHls) void setupHlsStream();
+    else if (book?.audio_download_url && hlsRef.current) {
+      // hls.js owned blob: currentSrc is blob: — still fallback to direct
+      fallbackToDirect();
+    } else if (!triedHls) void setupHlsStream();
     else setLoadError('Audio failed to load.');
   }, [audioSrc, book?.audio_download_url, capturePositionForReload, fallbackToDirect, isHlsStreamUrl, setupHlsStream, triedHls]);
 

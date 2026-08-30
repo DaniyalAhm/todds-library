@@ -28,6 +28,12 @@ class Settings(BaseSettings):
     batch_size: int = 1
     chunk_length_s: int = 30
     vad_filter: bool = False
+    # ── Castwright (host-mode) ────────────────────────────────────────────
+    castwright_url: str = "http://host.docker.internal:9990"
+    castwright_enabled: bool = True
+    ollama_url: str = "http://localhost:11434"
+    generated_audio_dir: str = ""  # empty => per-book folder alongside ebook (scanner-visible)
+    castwright_timeout_s: int = 300
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 

@@ -73,12 +73,19 @@ services:
       ASR_GPU_INDEX: 0
       ASR_COMPUTE_TYPE: float32
       ASR_MODELS_DIR: /data/asr_models
+      CASTWRIGHT_URL: ${CASTWRIGHT_URL:-http://host.docker.internal:9990}
+      CASTWRIGHT_ENABLED: ${CASTWRIGHT_ENABLED:-true}
+      OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
+      GENERATED_AUDIO_DIR: ${GENERATED_AUDIO_DIR:-}
+      CASTWRIGHT_TIMEOUT_S: ${CASTWRIGHT_TIMEOUT_S:-300}
     volumes:
       - /mnt/2tb_jellyfin/Books:/books
       - coverdata:/data/covers
       - asrdata:/data/asr_models
     ports:
       - "${BACKEND_PORT:-8830}:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - internal
       - frontend
@@ -150,8 +157,11 @@ services:
       - backend
     restart: unless-stopped
 
+  # Castwright now runs on HOST (port 9990) — see CASTWRIGHT_URL above.
+  # This service is kept for optional docker-mode (profile castwright-docker).
   castwright:
     container_name: castwright
+    profiles: ["castwright-docker"]
     networks:
       - ai-net
     build:
@@ -163,7 +173,7 @@ services:
       - "${CastWright_PORT:-9990}:9990"
 
     environment:
-      OLLAMA_URL: http://ollama:11434
+      OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
 
     deploy:
       resources:

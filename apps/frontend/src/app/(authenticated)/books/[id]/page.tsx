@@ -25,6 +25,7 @@ import {
 } from 'lucide-react';
 import { formatDuration, formatDate, formatFileSize, getProgressPercent } from '@/lib/utils';
 import { routes } from '@/lib/routes';
+import { CastwrightChapterGenerate } from '@/components/books/castwright-chapter-generate';
 
 export default function BookDetailPage() {
   const params = useParams();
@@ -255,12 +256,27 @@ export default function BookDetailPage() {
       <Tabs defaultValue="description">
         <TabsList>
           <TabsTrigger value="description">Description</TabsTrigger>
+          <TabsTrigger value="chapters">Chapters ({book.chapters?.length || 0})</TabsTrigger>
           <TabsTrigger value="bookmarks">
             Bookmarks ({bookmarks?.length || 0})
           </TabsTrigger>
         </TabsList>
         <TabsContent value="description" className="text-sm text-muted-foreground leading-relaxed">
           {book.description || 'No description available.'}
+        </TabsContent>
+        <TabsContent value="chapters">
+          {book.chapters && book.chapters.length > 0 ? (
+            <div className="space-y-3">
+              {book.chapters.map((ch) => (
+                <div key={ch.id} className="rounded-lg border border-border bg-card p-3">
+                  <p className="text-sm font-medium">{ch.index}. {ch.title}</p>
+                  <CastwrightChapterGenerate bookId={id} chapterId={ch.id} chapterIndex={ch.index} chapterTitle={ch.title} fileFormat={book.format} />
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">No chapters detected. Re-scan or ensure EPUB has TOC.</p>
+          )}
         </TabsContent>
         <TabsContent value="bookmarks">
           {bookmarks && bookmarks.length > 0 ? (

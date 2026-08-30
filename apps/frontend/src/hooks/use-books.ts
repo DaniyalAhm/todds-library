@@ -282,4 +282,73 @@ export function useRefreshBookMetadata(bookId: string) {
   });
 }
 
+export function useGenerateAudibleChapters(bookId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (data?: { overwrite?: boolean }) =>
+      api.post<{ status: string; chapter_count: number; chapters: Array<{ title: string; start_offset_ms: number; end_offset_ms: number }>; source: string }>(
+        `/books/${bookId}/generate/audible-chapters`,
+        undefined,
+        data?.overwrite ? { params: { overwrite: true } } : undefined
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['book', bookId] });
+      queryClient.invalidateQueries({ queryKey: ['books'] });
+    },
+  });
+}
+
+// ── Castwright TTS (chapter-by-chapter, admin-only, one-at-a-time) ───────
+export function useCastwrightModels() {
+  return useQuery({
+    queryKey: ['castwright-models'],
+    queryFn: () => api.get<{ models: string[]; ollama_url: string }>('/castwright/models'),
+  });
+}
+export function useCastwrightHealth() {
+  return useQuery({
+    queryKey: ['castwright-health'],
+    queryFn: () => api.get<{ enabled: boolean; url?: string; status?: number; error?: string }>('/castwright/health'),
+  });
+}
+export function useChapterTtsStatus(bookId: string, chapterId: string) {
+  return useQuery({
+    queryKey: ['tts-chapter-status', bookId, chapterId],
+    queryFn: () =>
+      api.get<{
+        book_id: string; chapter_id: string; chapter_index: number; locked: boolean;
+        generated: Array<{ id: string; status: string; file_path: string; ollama_model?: string; created_at: string }>;
+        files: string[]; logs: Array<{ status: string; message: string; created_at: string }>;
+      }>(`/books/${bookId}/chapters/${chapterId}/generate/audio/status`),
+    enabled: !!bookId && !!chapterId,
+    refetchInterval: 5000,
+  });
+}
+export function useBookTtsStatus(bookId: string) {
+  return useQuery({
+    queryKey: ['tts-book-status', bookId],
+    queryFn: () =>
+      api.get<{ book_id: string; locked: boolean; generated: Array<{ chapter_index: number; chapter_id?: string; status: string; file_path: string; created_at: string }> }>(
+        `/books/${bookId}/generate/audio/status`
+      ),
+    enabled: !!bookId,
+    refetchInterval: 7000,
+  });
+}
+export function useGenerateChapterAudio(bookId: string, chapterId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { ollama_model?: string; tts_model_key?: string; overwrite?: boolean }) =>
+      api.post<{ status: string; chapter_id: string; chapter_index: number; file_path: string }>(
+        `/books/${bookId}/chapters/${chapterId}/generate/audio`,
+        { ollama_model: data.ollama_model, tts_model_key: data.tts_model_key, overwrite: !!data.overwrite }
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['tts-chapter-status', bookId, chapterId] });
+      qc.invalidateQueries({ queryKey: ['tts-book-status', bookId] });
+      qc.invalidateQueries({ queryKey: ['book', bookId] });
+    },
+  });
+}
+
 export type { Book, Bookmark, BookProgress };

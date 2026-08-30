@@ -7,6 +7,7 @@ from app.models.bookmark import Bookmark
 from app.models.metadata_cache import MetadataCache
 from app.models.settings import SystemSetting
 from app.models.subtitle import SubtitleMetadata
+from app.models.generated_audio import GeneratedAudio
 
 __all__ = [
     "User",
@@ -18,4 +19,5 @@ __all__ = [
     "MetadataCache",
     "SubtitleMetadata",
     "SystemSetting",
+    "GeneratedAudio",
 ]

@@ -4,12 +4,13 @@ from uuid import UUID
 
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class AuthResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+    playback_speed: float = 1.0
     session_token: str
     user_id: UUID
     username: str
@@ -71,3 +72,12 @@ class AdminUserUpdate(BaseModel):
     email: str | None = None
     password: str | None = None
     is_admin: bool | None = None
+
+
+class PlaybackSpeedRequest(BaseModel):
+    session_token: str
+    playback_speed: float | None = Field(default=None, ge=0.5, le=3.0, allow_inf_nan=False)
+
+
+class PlaybackSpeedResponse(BaseModel):
+    playback_speed: float

@@ -3,6 +3,7 @@
 import dynamic from 'next/dynamic';
 import { useParams, useRouter } from 'next/navigation';
 import { useBook } from '@/hooks/use-books';
+import { MarkBookComplete } from '@/components/books/mark-book-complete';
 import { Button } from '@/components/ui/button';
 import { ArrowLeft } from 'lucide-react';
 import { routes } from '@/lib/routes';
@@ -61,6 +62,7 @@ export default function ListenPage() {
             <p className="truncate text-xs text-muted-foreground">{book.author}</p>
           )}
         </div>
+        <MarkBookComplete bookId={id} watchProgress />
       </div>
       <div className="min-h-0 flex-1 overflow-hidden">
         <AudiobookPlayer bookId={id} />

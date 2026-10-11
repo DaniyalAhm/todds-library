@@ -4,6 +4,9 @@ import { useParams, useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import { useAuth } from '@/hooks/use-auth';
 import { useBook, useBookProgress, useBookmarks, useDeleteBookmark, useRefreshBookMetadata, useGenerateBookSubtitles } from '@/hooks/use-books';
+import { BookRatings } from '@/components/books/book-ratings';
+import { BookReview } from '@/components/books/book-review';
+import { MarkBookComplete } from '@/components/books/mark-book-complete';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -68,7 +71,7 @@ export default function BookDetailPage() {
 
   const isMixedMedia = book.has_ebook && book.has_audiobook;
   const isAudiobook = book.has_audiobook && !book.has_ebook;
-  const progressPercent = progress ? getProgressPercent(progress.progress, 1) : 0;
+  const progressPercent = progress?.completed ? 100 : progress ? getProgressPercent(progress.progress, 1) : 0;
   const formatLabels: Record<string, string> = {
     epub: 'EPUB', pdf: 'PDF', mobi: 'MOBI',
     mp3: 'MP3 Audiobook', m4b: 'M4B Audiobook',
@@ -151,6 +154,7 @@ export default function BookDetailPage() {
           )}
 
           <div className="flex flex-wrap gap-2">
+            <MarkBookComplete bookId={id} />
             {book.has_ebook && (
               <Button onClick={() => router.push(routes.bookRead(id))}>
                 <BookOpen className="mr-2 h-4 w-4" />
@@ -263,6 +267,9 @@ export default function BookDetailPage() {
           </div>
         </div>
       </div>
+
+      <BookRatings bookId={id} />
+      <BookReview bookId={id} />
 
       <Tabs defaultValue="description">
         <TabsList>

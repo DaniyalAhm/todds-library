@@ -25,6 +25,7 @@ interface PlayerState {
   duration: number;
   volume: number;
   speed: number;
+  speedChangeVersion: number;
   chapterIndex: number;
   chapters: Chapter[];
   sleepTimerEnd: number | null;
@@ -60,6 +61,7 @@ const initialState: PlayerState = {
   duration: 0,
   volume: 1,
   speed: 1,
+  speedChangeVersion: 0,
   chapterIndex: 0,
   chapters: [],
   sleepTimerEnd: null,
@@ -83,7 +85,8 @@ export const usePlayer = create<PlayerStore>()(
       },
 
       setSpeed: (speed: number) => {
-        set({ speed: Math.max(0.5, Math.min(3, speed)) });
+        if (!Number.isFinite(speed)) return;
+        set((state) => ({ speed: Math.max(0.5, Math.min(3, speed)), speedChangeVersion: state.speedChangeVersion + 1 }));
       },
 
       nextChapter: () => {
@@ -132,7 +135,7 @@ export const usePlayer = create<PlayerStore>()(
         set({ chapterIndex: Math.max(0, Math.min(index, Math.max(0, chapters.length - 1))) });
       },
       setChapters: (chapters: Chapter[]) => set({ chapters }),
-      reset: () => set(initialState),
+      reset: () => set((state) => ({ ...initialState, speed: state.speed, speedChangeVersion: state.speedChangeVersion })),
     }),
     {
       name: 'player-store',
@@ -140,7 +143,7 @@ export const usePlayer = create<PlayerStore>()(
         currentBook: state.currentBook,
         currentBookInfo: state.currentBookInfo,
         volume: state.volume,
-        speed: state.speed,
+
       }),
     }
   )

@@ -15,6 +15,7 @@ _client: Redis | None = None
 
 SESSION_KEY_PREFIX = "sess:"
 USER_SESSIONS_KEY_PREFIX = "user_sessions:"
+USER_PLAYBACK_SPEED_KEY_PREFIX = "user_playback_speed:"
 
 _redis_kwargs: dict[str, Any] = {}
 
@@ -55,7 +56,7 @@ async def close_redis() -> None:
 async def create_session(user_id: str) -> str:
     client = get_client()
     session_id = secrets.token_urlsafe(32)
-    payload = json.dumps({"user_id": str(user_id)})
+    payload = json.dumps({"user_id": str(user_id), "playback_speed": await get_playback_speed(str(user_id))})
     ttl = _session_ttl_seconds()
     await client.set(f"{SESSION_KEY_PREFIX}{session_id}", payload, ex=ttl)
     await client.sadd(f"{USER_SESSIONS_KEY_PREFIX}{user_id}", session_id)
@@ -109,3 +110,24 @@ async def revoke_all_user_sessions(user_id: str) -> None:
                 pipe.delete(f"{SESSION_KEY_PREFIX}{session_id}")
             pipe.delete(key)
             await pipe.execute()
+
+
+async def get_playback_speed(user_id: str) -> float:
+    value = await get_client().get(f"{USER_PLAYBACK_SPEED_KEY_PREFIX}{user_id}")
+    return float(value) if value is not None else 1.0
+
+
+async def set_playback_speed(user_id: str, speed: float) -> None:
+    """Save the user default and update active sessions without extending their TTL."""
+    client = get_client()
+    await client.set(f"{USER_PLAYBACK_SPEED_KEY_PREFIX}{user_id}", str(speed))
+    for session_id in await client.smembers(f"{USER_SESSIONS_KEY_PREFIX}{user_id}"):
+        key = f"{SESSION_KEY_PREFIX}{session_id}"
+        raw = await client.get(key)
+        if raw is None:
+            continue
+        payload = json.loads(raw)
+        if payload.get("user_id") != str(user_id):
+            continue
+        payload["playback_speed"] = speed
+        await client.set(key, json.dumps(payload), xx=True, keepttl=True)

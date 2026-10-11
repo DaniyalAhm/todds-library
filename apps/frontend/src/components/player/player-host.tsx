@@ -5,12 +5,14 @@ import { useBook, useBookProgress, useUpdateProgress } from '@/hooks/use-books';
 import { getAccessToken, postProgressWithKeepalive, refreshAuthSession } from '@/lib/api-client';
 import { clearProgress, enqueueProgress, type ProgressSnapshot } from '@/lib/progress-queue';
 import { usePlayer } from '@/hooks/use-player';
+import { usePlaybackSpeedSession } from '@/hooks/use-playback-speed-session';
 import { useMediaSession } from '@/hooks/use-media-session';
 import { AudioPlayerContext } from './audio-player-context';
 import { logger } from '@/lib/logger';
 import { useContinuousProgressSync } from '@/hooks/use-continuous-progress-sync';
 
 export function PlayerHost({ children }: { children?: React.ReactNode }) {
+  usePlaybackSpeedSession();
   const audioRef = useRef<HTMLAudioElement>(null);
   const hlsRef = useRef<any>(null);
   const hlsRetryRef = useRef(false);

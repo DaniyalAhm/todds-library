@@ -18,6 +18,19 @@ RUN pip install --no-cache-dir --upgrade pip && \
     python - <<'PY'
 import importlib.metadata
 import torch
+import io
+import wave
+from faster_whisper.audio import decode_audio
+
+# Exercise the decoder API so incompatible PyAV versions fail during build.
+audio = io.BytesIO()
+with wave.open(audio, "wb") as wav:
+    wav.setnchannels(1)
+    wav.setsampwidth(2)
+    wav.setframerate(16000)
+    wav.writeframes(b"\x00\x00" * 1600)
+audio.seek(0)
+assert decode_audio(audio).shape == (1600,), "ASR audio decoding failed"
 
 
 def version_tuple(value: str) -> tuple[int, ...]:

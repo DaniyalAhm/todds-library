@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import os
 from uuid import UUID
 
@@ -11,7 +13,7 @@ from app.dependencies import get_current_user, get_current_user_from_request, ge
 from app.models.user import User
 from app.schemas.book import BookCreate, BookList, BookResponse, ChapterResponse
 from app.schemas.bookmark import BookmarkCreate, BookmarkResponse
-from app.schemas.progress import ReadingProgressResponse, UpdateProgress
+from app.schemas.progress import ReadingProgressResponse, UpdateProgress, UpdateBookReview, BookRatingsResponse
 from app.services.book_service import (
     create_bookmark,
     delete_book,
@@ -22,6 +24,7 @@ from app.services.book_service import (
     get_bookmarks,
     get_books,
     get_progress,
+    get_book_ratings,
     update_progress,
 )
 from app.services.search_service import remove_book_from_meili
@@ -208,3 +211,59 @@ async def remove_bookmark(
     if not any(b.id == bookmark_id for b in bookmarks):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Bookmark not found")
     await delete_bookmark(db, bookmark_id)
+
+
+@router.post("/{book_id}/complete", response_model=ReadingProgressResponse)
+async def complete_book(
+    book_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    book = await get_book_for_user(db, book_id, current_user.id)
+    if book is None:
+        raise HTTPException(status_code=404, detail="Book not found")
+    progress = await get_progress(db, current_user.id, book_id)
+    if progress is None or (not progress.completed and progress.progress < 0.85):
+        raise HTTPException(status_code=400, detail="Read or listen to at least 85% before marking this book complete")
+    if not progress.completed:
+        progress.completed = True
+        progress.completed_at = datetime.now(timezone.utc)
+        await db.commit()
+        await db.refresh(progress)
+    return progress
+
+
+@router.put("/{book_id}/review", response_model=ReadingProgressResponse)
+async def save_book_review(
+    book_id: UUID,
+    data: UpdateBookReview,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    book = await get_book_for_user(db, book_id, current_user.id)
+    if book is None:
+        raise HTTPException(status_code=404, detail="Book not found")
+    progress = await get_progress(db, current_user.id, book_id)
+    if progress is None or (not progress.completed and progress.progress < 1.0):
+        raise HTTPException(status_code=400, detail="Complete this book before leaving a review")
+    if not progress.completed:
+        progress.completed = True
+        progress.completed_at = datetime.now(timezone.utc)
+    progress.rating = data.rating
+    progress.review_text = data.review_text.strip() or None
+    progress.review_updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(progress)
+    return progress
+
+
+@router.get("/{book_id}/ratings", response_model=BookRatingsResponse)
+async def book_ratings(
+    book_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    book = await get_book_for_user(db, book_id, current_user.id)
+    if book is None:
+        raise HTTPException(status_code=404, detail="Book not found")
+    return await get_book_ratings(db, book)

@@ -12,6 +12,7 @@ declare module 'next-auth' {
     };
     accessToken: string;
     sessionToken: string;
+    playbackSpeed: number;
   }
 }
 
@@ -24,6 +25,7 @@ declare module 'next-auth/jwt' {
     isAdmin: boolean;
     accessToken: string;
     sessionToken: string;
+    playbackSpeed: number;
   }
 }
 
@@ -149,6 +151,7 @@ export const authOptions: NextAuthOptions = {
             isAdmin: data.is_admin,
             accessToken: data.access_token,
             sessionToken: data.session_token,
+            playbackSpeed: data.playback_speed ?? 1,
           };
         } catch {
           return null;
@@ -200,7 +203,7 @@ export const authOptions: NextAuthOptions = {
       }
       return true;
     },
-    async jwt({ token, account, user }) {
+    async jwt({ token, account, user, trigger, session }) {
       if (account) {
         const authAccount = account as { access_token?: string; session_token?: string };
         if (authAccount.access_token) {
@@ -244,6 +247,24 @@ export const authOptions: NextAuthOptions = {
           }
         }
       }
+      if (token.sessionToken) {
+        const playbackSpeed = trigger === 'update' ? session?.playbackSpeed : undefined;
+        if (playbackSpeed === undefined || (typeof playbackSpeed === 'number' && Number.isFinite(playbackSpeed) && playbackSpeed >= 0.5 && playbackSpeed <= 3)) {
+          try {
+            const response = await fetch(`${getServerApiUrl()}/auth/session/playback-speed`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ session_token: token.sessionToken, playback_speed: playbackSpeed }),
+            });
+            if (!response.ok) throw new Error('Unable to save or load playback speed');
+            const preferences = await response.json();
+            token.playbackSpeed = preferences.playback_speed;
+          } catch (error) {
+            if (trigger === 'update') throw error;
+            // Retain the last saved preference if the backend is temporarily unavailable.
+          }
+        }
+      }
       return token;
     },
     async session({ session, token }) {
@@ -254,6 +275,7 @@ export const authOptions: NextAuthOptions = {
       session.user.isAdmin = Boolean(token.isAdmin);
       session.accessToken = token.accessToken;
       session.sessionToken = token.sessionToken;
+      session.playbackSpeed = token.playbackSpeed ?? 1;
       return session;
     },
   },

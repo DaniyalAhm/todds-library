@@ -23,6 +23,11 @@ interface BookProgress {
   progress: number;
   position: number;
   location?: string | null;
+  rating?: number | null;
+  review_text?: string | null;
+  review_updated_at?: string | null;
+  completed: boolean;
+  completed_at?: string | null;
   last_updated: string;
 }
 
@@ -133,9 +138,10 @@ export function useBook(id: string) {
   });
 }
 
-export function useBookProgress(bookId: string) {
+export function useBookProgress(bookId: string, refetchInterval: number | false = false) {
   return useQuery({
     queryKey: ['book-progress', bookId],
+    refetchInterval,
     queryFn: () => api.get<BookProgress>(`/books/${bookId}/progress`),
     enabled: !!bookId,
   });
@@ -367,3 +373,39 @@ export function useGenerateChapterAudio(bookId: string, chapterId: string) {
 }
 
 export type { Book, Bookmark, BookProgress };
+
+
+export function useCompleteBook(bookId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.post<BookProgress>(`/books/${bookId}/complete`),
+    onSuccess: (progress) => {
+      queryClient.setQueryData(['book-progress', bookId], progress);
+      queryClient.invalidateQueries({ queryKey: ['book', bookId] });
+      queryClient.invalidateQueries({ queryKey: ['books'] });
+    },
+  });
+}
+
+
+export function useSaveBookReview(bookId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (review: { rating: number; review_text: string }) =>
+      api.put<BookProgress>(`/books/${bookId}/review`, review),
+    onSuccess: (progress) => {
+      queryClient.setQueryData(['book-progress', bookId], progress);
+      queryClient.invalidateQueries({ queryKey: ['book-ratings'] });
+    },
+  });
+}
+
+
+export function useBookRatings(bookId: string) {
+  return useQuery({
+    queryKey: ['book-ratings', bookId],
+    queryFn: () => api.get<{ average_rating: number | null; rating_count: number; distribution: Record<string, number> }>(`/books/${bookId}/ratings`),
+    enabled: !!bookId,
+    refetchInterval: 30000,
+  });
+}

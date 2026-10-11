@@ -14,6 +14,8 @@ from app.schemas.auth import (
     AdminUserList,
     AdminUserUpdate,
     AuthResponse,
+    PlaybackSpeedRequest,
+    PlaybackSpeedResponse,
     LoginRequest,
     LogoutRequest,
     RefreshRequest,
@@ -33,6 +35,8 @@ from app.services.auth_service import (
 from app.services.session_service import (
     create_session,
     get_session,
+    get_playback_speed,
+    set_playback_speed,
     revoke_all_user_sessions,
     revoke_session,
 )
@@ -59,6 +63,7 @@ async def _auth_response(user: User) -> AuthResponse:
         username=user.username,
         email=user.email,
         is_admin=user.is_admin,
+        playback_speed=await get_playback_speed(str(user.id)),
     )
 
 
@@ -221,6 +226,7 @@ async def refresh_token(
         username=user.username,
         email=user.email,
         is_admin=user.is_admin,
+        playback_speed=await get_playback_speed(str(user.id)),
     )
 
 
@@ -339,3 +345,13 @@ async def delete_user(
     await db.delete(user)
     await db.commit()
     await revoke_all_user_sessions(str(user.id))
+
+
+@router.post("/session/playback-speed", response_model=PlaybackSpeedResponse)
+async def session_playback_speed(request: PlaybackSpeedRequest):
+    user_id = await get_session(request.session_token)
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    if request.playback_speed is not None:
+        await set_playback_speed(user_id, request.playback_speed)
+    return PlaybackSpeedResponse(playback_speed=await get_playback_speed(user_id))

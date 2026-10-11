@@ -114,7 +114,7 @@ async def attach_user_progress(db: AsyncSession, books: list[Book], user_id: UUI
         )
     )
     progress_by_book_id = {
-        progress.book_id: progress.progress
+        progress.book_id: 1.0 if progress.completed else progress.progress
         for progress in result.scalars().all()
     }
     for book in books:
@@ -504,3 +504,41 @@ async def delete_book(
     await db.delete(book)
     await db.commit()
     return result
+
+
+async def get_book_ratings(db: AsyncSession, book: Book) -> dict:
+    """Share ratings across users' copies of a work, counting each user once."""
+    matches = [Book.id == book.id]
+    for field in ('isbn', 'asin', 'file_hash'):
+        value = getattr(book, field)
+        if value and value.strip():
+            matches.append(getattr(Book, field) == value)
+    if book.title.strip() and book.author and book.author.strip():
+        matches.append(and_(
+            func.lower(func.trim(Book.title)) == book.title.strip().lower(),
+            func.lower(func.trim(Book.author)) == book.author.strip().lower(),
+        ))
+    latest = (
+        select(
+            ReadingProgress.rating.label('rating'),
+            func.row_number().over(
+                partition_by=ReadingProgress.user_id,
+                order_by=(ReadingProgress.review_updated_at.desc(), ReadingProgress.last_updated.desc(), ReadingProgress.id.desc()),
+            ).label('rank'),
+        )
+        .join(Book, ReadingProgress.book_id == Book.id)
+        .where(or_(*matches), ReadingProgress.rating.between(1, 5))
+        .subquery()
+    )
+    rows = (await db.execute(
+        select(latest.c.rating, func.count()).where(latest.c.rank == 1).group_by(latest.c.rating)
+    )).all()
+    distribution = {star: 0 for star in range(1, 6)}
+    for rating, count in rows:
+        distribution[rating] = count
+    count = sum(distribution.values())
+    return {
+        'average_rating': sum(star * total for star, total in distribution.items()) / count if count else None,
+        'rating_count': count,
+        'distribution': distribution,
+    }

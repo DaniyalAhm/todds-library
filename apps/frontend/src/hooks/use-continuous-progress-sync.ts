@@ -1,8 +1,8 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
-import { api } from '@/lib/api-client';
-import { enqueueProgress } from '@/lib/progress-queue';
+import { api, captureProgress, getAuthUserId, postProgressWithKeepalive } from '@/lib/api-client';
+import { enqueueProgress, clearProgress } from '@/lib/progress-queue';
 import type { ProgressSnapshot } from '@/lib/progress-queue';
 
 export const CONTINUOUS_SYNC_INTERVAL_MS = 500;
@@ -32,6 +32,19 @@ export function useContinuousProgressSync(
   useEffect(() => {
     if (!enabled) return;
 
+    let owner = getAuthUserId();
+    const snapshotForUser = () => {
+      const snapshot = getSnapshotRef.current();
+      owner ??= getAuthUserId();
+      return snapshot && owner ? captureProgress({ ...snapshot, expected_user_id: owner }) : null;
+    };
+    const flush = () => {
+      const snapshot = snapshotForUser();
+      if (!snapshot) return;
+      postProgressWithKeepalive(snapshot.bookId, snapshot);
+      void enqueueProgress(snapshot);
+    };
+
     let intervalId: ReturnType<typeof setInterval> | null = null;
     let visibilityHandler: (() => void) | null = null;
 
@@ -40,20 +53,18 @@ export function useContinuousProgressSync(
       if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
       if (inFlightRef.current) return;
 
-      const snapshot = getSnapshotRef.current();
+      const snapshot = snapshotForUser();
       if (!snapshot || !snapshot.bookId) return;
 
       // Deduplicate: skip if position/progress/location unchanged
-      const key = `${snapshot.bookId}:${snapshot.position}:${snapshot.progress}:${snapshot.location ?? ''}`;
+      const key = `${snapshot.expected_user_id}:${snapshot.bookId}:${snapshot.position}:${snapshot.progress}:${snapshot.location ?? ''}`;
       if (lastSentRef.current === key) return;
 
       inFlightRef.current = true;
       try {
-        await api.post(`/books/${snapshot.bookId}/progress`, {
-          position: snapshot.position,
-          progress: snapshot.progress,
-          location: snapshot.location ?? null,
-        });
+        await enqueueProgress(snapshot);
+        await api.post(`/books/${snapshot.bookId}/progress`, snapshot);
+        await clearProgress(snapshot.bookId, snapshot.expected_user_id, snapshot.captured_at);
         lastSentRef.current = key;
       } catch {
         // On network failure, queue for Background Sync retry
@@ -73,6 +84,7 @@ export function useContinuousProgressSync(
     // Pause/resume on visibility change to save battery
     if (typeof document !== 'undefined') {
       visibilityHandler = () => {
+        if (document.visibilityState === 'hidden') flush();
         if (document.visibilityState === 'visible' && enabledRef.current) {
           // immediate tick on becoming visible
           void tick();
@@ -81,10 +93,14 @@ export function useContinuousProgressSync(
       document.addEventListener('visibilitychange', visibilityHandler);
     }
 
+    window.addEventListener('pagehide', flush);
+
     // Immediate first tick after a short delay to pick up initial state
     const initialTimer = setTimeout(() => void tick(), 500);
 
     return () => {
+      flush();
+      window.removeEventListener('pagehide', flush);
       if (intervalId !== null) clearInterval(intervalId);
       clearTimeout(initialTimer);
       if (visibilityHandler) {

@@ -4,13 +4,17 @@ import { useContinuousProgressSync } from './use-continuous-progress-sync';
 
 vi.mock('@/lib/api-client', () => ({
   api: { post: vi.fn().mockResolvedValue({}) },
+  getAuthUserId: () => 'user-1',
+  captureProgress: (snapshot: object) => ({ ...snapshot, expected_user_id: 'user-1', captured_at: Date.now() }),
+  postProgressWithKeepalive: vi.fn(),
 }));
 
 vi.mock('@/lib/progress-queue', () => ({
   enqueueProgress: vi.fn().mockResolvedValue(true),
+  clearProgress: vi.fn().mockResolvedValue(undefined),
 }));
 
-import { api } from '@/lib/api-client';
+import { api, postProgressWithKeepalive } from '@/lib/api-client';
 
 describe('useContinuousProgressSync', () => {
   beforeEach(() => {
@@ -36,11 +40,13 @@ describe('useContinuousProgressSync', () => {
     // initial 500ms delay + interval
     await vi.advanceTimersByTimeAsync(500);
     expect(api.post).toHaveBeenCalledTimes(1);
-    expect(api.post).toHaveBeenCalledWith('/books/book-1/progress', {
+    expect(api.post).toHaveBeenCalledWith('/books/book-1/progress', expect.objectContaining({
       position: 42,
       progress: 0.5,
       location: 'cfi-123',
-    });
+      expected_user_id: 'user-1',
+      captured_at: expect.any(Number),
+    }));
 
     // Change position to simulate playback advancing
     getSnapshot.mockReturnValue({ bookId: 'book-1', position: 43, progress: 0.51, location: 'cfi-123' });
@@ -70,6 +76,15 @@ describe('useContinuousProgressSync', () => {
     await vi.advanceTimersByTimeAsync(1000);
     // hidden → no additional posts
     expect(api.post).toHaveBeenCalledTimes(1);
+  });
+
+  it('flushes the latest position on page exit and unmount', async () => {
+    const snapshot = { bookId: 'book-1', position: 87, progress: 0.87 };
+    const { unmount } = renderHook(() => useContinuousProgressSync(true, () => snapshot));
+    window.dispatchEvent(new Event('pagehide'));
+    expect(postProgressWithKeepalive).toHaveBeenCalledWith('book-1', expect.objectContaining({ position: 87, expected_user_id: 'user-1' }));
+    unmount();
+    expect(postProgressWithKeepalive).toHaveBeenCalledTimes(2);
   });
 
   it('handles null snapshot gracefully', async () => {

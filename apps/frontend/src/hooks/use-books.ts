@@ -2,9 +2,11 @@
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useSession } from 'next-auth/react';
-import { api, getAccessToken, getApiUrl } from '@/lib/api-client';
+import { enqueueProgress, clearProgress } from '@/lib/progress-queue';
+import { api, captureProgress, getAccessToken, getApiUrl } from '@/lib/api-client';
 
 interface BooksQueryParams {
+  in_progress?: boolean;
   limit?: number;
   offset?: number;
   library_id?: string;
@@ -22,6 +24,8 @@ interface BookProgress {
   user_id: string;
   progress: number;
   position: number;
+  captured_at?: number | null;
+  position_updated_at?: string | null;
   location?: string | null;
   rating?: number | null;
   review_text?: string | null;
@@ -123,6 +127,17 @@ export function useBooks(params?: BooksQueryParams) {
   });
 }
 
+export function useBookStats() {
+  const { data: session } = useSession();
+  return useQuery({
+    queryKey: ['books', 'stats', session?.accessToken],
+    queryFn: () => api.get<{ total: number; in_progress: number; completed: number; not_started: number }>(
+      '/books/stats', authConfig(session?.accessToken)
+    ),
+    enabled: !!session?.accessToken,
+  });
+}
+
 export function useBook(id: string) {
   const { data: session } = useSession();
   return useQuery({
@@ -150,8 +165,13 @@ export function useBookProgress(bookId: string, refetchInterval: number | false 
 export function useUpdateProgress(bookId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (data: { progress: number; position: number; location?: string | null }) =>
-      api.post(`/books/${bookId}/progress`, data),
+    mutationFn: async (data: { progress: number; position: number; location?: string | null; expected_user_id?: string | null; captured_at?: number }) => {
+      const snapshot = captureProgress({ ...data, bookId });
+      await enqueueProgress(snapshot);
+      const result = await api.post<BookProgress>(`/books/${bookId}/progress`, snapshot);
+      await clearProgress(bookId, snapshot.expected_user_id, snapshot.captured_at);
+      return result;
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['book-progress', bookId] });
       queryClient.invalidateQueries({ queryKey: ['book', bookId] });

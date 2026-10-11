@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useCallback, useMemo, useState } from 'react';
 import { useBook, useBookProgress, useUpdateProgress } from '@/hooks/use-books';
-import { getAccessToken, postProgressWithKeepalive, refreshAuthSession } from '@/lib/api-client';
+import { captureProgress, getAccessToken, postProgressWithKeepalive, refreshAuthSession } from '@/lib/api-client';
 import { clearProgress, enqueueProgress, type ProgressSnapshot } from '@/lib/progress-queue';
 import { usePlayer } from '@/hooks/use-player';
 import { usePlaybackSpeedSession } from '@/hooks/use-playback-speed-session';
@@ -59,7 +59,7 @@ export function PlayerHost({ children }: { children?: React.ReactNode }) {
   } = usePlayer();
 
   const { data: book } = useBook(bookId ?? '');
-  const { data: progress } = useBookProgress(bookId ?? '');
+  const { data: progress, isSuccess: progressLoaded } = useBookProgress(bookId ?? '');
   const updateProgress = useUpdateProgress(bookId ?? '');
 
   // Keep isPlayingRef fresh
@@ -182,6 +182,13 @@ export function PlayerHost({ children }: { children?: React.ReactNode }) {
     [book?.title, book?.author, book?.cover]
   );
 
+  useEffect(() => {
+    audioSetupKeyRef.current = null;
+    hydratedProgressBookRef.current = null;
+    setTriedHls(false);
+    setTrackIndex(0);
+  }, [bookId]);
+
   // Hydrate progress
   useEffect(() => {
     if (!bookId || !progress || hydratedProgressBookRef.current === bookId) return;
@@ -203,13 +210,6 @@ export function PlayerHost({ children }: { children?: React.ReactNode }) {
     }
     hydratedProgressBookRef.current = bookId;
   }, [bookId, chapters.length, isMultiTrackDirect, progress, setCurrentTime, trackForPosition, trackStart]);
-
-  useEffect(() => {
-    audioSetupKeyRef.current = null;
-    hydratedProgressBookRef.current = null;
-    setTriedHls(false);
-    setTrackIndex(0);
-  }, [bookId]);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -404,11 +404,12 @@ export function PlayerHost({ children }: { children?: React.ReactNode }) {
 
   const getProgressSnapshot = useCallback((): ProgressSnapshot | null => {
     const audio = audioRef.current;
-    if (!audio || !bookId) return null;
+    if (!audio || !bookId || !progressLoaded) return null;
+    if (progress && (hydratedProgressBookRef.current !== bookId || seekAfterTrackLoadRef.current !== null)) return null;
     const globalPosition = isMultiTrackDirect ? trackStart(trackIndex) + audio.currentTime : audio.currentTime;
     const totalDuration = duration || audio.duration || 1;
-    return { bookId, progress: globalPosition / totalDuration, position: globalPosition };
-  }, [bookId, duration, isMultiTrackDirect, trackIndex, trackStart]);
+    return captureProgress({ bookId, progress: Math.min(1, Math.max(0, globalPosition / totalDuration)), position: Math.max(0, globalPosition) });
+  }, [bookId, duration, isMultiTrackDirect, trackIndex, trackStart, progressLoaded, progress]);
 
   const saveProgress = useCallback(() => {
     const audio = audioRef.current;
@@ -416,10 +417,10 @@ export function PlayerHost({ children }: { children?: React.ReactNode }) {
     if (!audio || !snapshot) return;
     if (!bookId) return;
     updateProgress.mutate(
-      { progress: snapshot.progress, position: snapshot.position },
+      snapshot,
       {
         onSuccess: () => {
-          void clearProgress(snapshot.bookId);
+          void clearProgress(snapshot.bookId, snapshot.expected_user_id, snapshot.captured_at);
         },
       }
     );
@@ -767,9 +768,8 @@ export function PlayerHost({ children }: { children?: React.ReactNode }) {
   const queueCurrentPosition = useCallback(() => {
     const snapshot = getProgressSnapshot();
     if (!snapshot) return;
-    void enqueueProgress(snapshot).then((queued) => {
-      if (!queued) flushProgress();
-    });
+    postProgressWithKeepalive(snapshot.bookId, snapshot);
+    void enqueueProgress(snapshot);
   }, [flushProgress, getProgressSnapshot]);
 
   const handlePause = useCallback(() => {

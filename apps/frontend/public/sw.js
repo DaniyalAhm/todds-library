@@ -1,5 +1,5 @@
 const DB_NAME = 'todds-library';
-const STORE = 'progress-queue';
+const STORE = 'progress-queue-v2';
 const SYNC_TAG = 'save-progress';
 
 let running = false;
@@ -43,14 +43,18 @@ self.addEventListener('sync', (event) => {
 
 function openQueue() {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, 1);
+    const req = indexedDB.open(DB_NAME, 2);
     req.onupgradeneeded = () => {
       const db = req.result;
+      if (db.objectStoreNames.contains('progress-queue')) db.deleteObjectStore('progress-queue');
       if (!db.objectStoreNames.contains(STORE)) {
-        db.createObjectStore(STORE, { keyPath: 'bookId' });
+        db.createObjectStore(STORE, { keyPath: ['expected_user_id', 'bookId'] });
       }
     };
-    req.onsuccess = () => resolve(req.result);
+    req.onsuccess = () => {
+      req.result.onversionchange = () => req.result.close();
+      resolve(req.result);
+    };
     req.onerror = () => reject(req.error);
   });
 }
@@ -64,10 +68,15 @@ function getAllEntries(db) {
   });
 }
 
-function deleteEntry(db, bookId) {
+function deleteEntry(db, entry) {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE, 'readwrite');
-    tx.objectStore(STORE).delete(bookId);
+    const store = tx.objectStore(STORE);
+    const key = [entry.expected_user_id, entry.bookId];
+    const request = store.get(key);
+    request.onsuccess = () => {
+      if (request.result && request.result.captured_at <= entry.captured_at) store.delete(key);
+    };
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
@@ -78,7 +87,10 @@ async function getAccessToken() {
     const res = await fetch('/api/auth/session', { credentials: 'same-origin' });
     if (!res.ok) return null;
     const session = await res.json();
-    return session && session.accessToken ? session.accessToken : null;
+    if (!session?.accessToken) return null;
+    const encoded = session.accessToken.split('.')[1];
+    const payload = JSON.parse(atob(encoded.replace(/-/g, '+').replace(/_/g, '/')));
+    return { token: session.accessToken, userId: payload.sub };
   } catch {
     return null;
   }
@@ -87,8 +99,8 @@ async function getAccessToken() {
 async function runSync() {
   if (running) return;
   running = true;
+  let db;
   try {
-    let db;
     try {
       db = await openQueue();
     } catch {
@@ -102,10 +114,11 @@ async function runSync() {
     }
     if (!entries || entries.length === 0) return;
 
-    const token = await getAccessToken();
-    if (!token) return;
+    const session = await getAccessToken();
+    if (!session?.userId) return;
 
     for (const entry of entries) {
+      if (entry.expected_user_id !== session.userId) continue;
       try {
         const res = await fetch(
           `${self.location.origin}/backend-api/books/${encodeURIComponent(entry.bookId)}/progress`,
@@ -113,9 +126,11 @@ async function runSync() {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              Authorization: `Bearer ${token}`,
+              Authorization: `Bearer ${session.token}`,
             },
             body: JSON.stringify({
+              expected_user_id: entry.expected_user_id,
+              captured_at: entry.captured_at,
               progress: entry.progress,
               position: entry.position,
               location: entry.location ?? null,
@@ -123,13 +138,14 @@ async function runSync() {
           }
         );
         if (res.ok) {
-          await deleteEntry(db, entry.bookId);
+          await deleteEntry(db, entry);
         }
       } catch {
         // Keep the entry; a later sync will retry it.
       }
     }
   } finally {
+    if (db) db.close();
     running = false;
   }
 }

@@ -1,77 +1,115 @@
+import { api, captureProgress, getAuthUserId } from '@/lib/api-client';
+
 export interface ProgressSnapshot {
   bookId: string;
   progress: number;
   position: number;
   location?: string | null;
+  expected_user_id?: string | null;
+  captured_at?: number;
 }
 
 const DB_NAME = 'todds-library';
-const STORE = 'progress-queue';
+const STORE = 'progress-queue-v2';
 const SYNC_TAG = 'save-progress';
+let replaying = false;
 
 export function isSyncSupported(): boolean {
-  return (
-    typeof window !== 'undefined' &&
-    'serviceWorker' in navigator &&
-    'sync' in ServiceWorkerRegistration.prototype
-  );
+  return typeof window !== 'undefined' && 'serviceWorker' in navigator && 'ServiceWorkerRegistration' in window && 'sync' in ServiceWorkerRegistration.prototype;
 }
 
 function openQueue(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, 1);
+    let settled = false;
+    const timer = setTimeout(() => { settled = true; reject(new Error('Progress journal unavailable')); }, 1500);
+    const req = indexedDB.open(DB_NAME, 2);
     req.onupgradeneeded = () => {
       const db = req.result;
-      if (!db.objectStoreNames.contains(STORE)) {
-        db.createObjectStore(STORE, { keyPath: 'bookId' });
-      }
+      // Legacy entries have no account identity and cannot be replayed safely.
+      if (db.objectStoreNames.contains('progress-queue')) db.deleteObjectStore('progress-queue');
+      if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE, { keyPath: ['expected_user_id', 'bookId'] });
     };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
+    req.onsuccess = () => {
+      clearTimeout(timer);
+      if (settled) { req.result.close(); return; }
+      settled = true;
+      req.result.onversionchange = () => req.result.close();
+      resolve(req.result);
+    };
+    req.onerror = () => { clearTimeout(timer); settled = true; reject(req.error); };
   });
 }
 
-/**
- * Queue the latest progress for delivery via Background Sync. Only the most
- * recent position per book is kept (progress is idempotent, latest wins).
- * Resolves `true` when the save was queued for Background Sync; `false` when
- * Background Sync is unavailable and the caller must fall back to a direct
- * keepalive save.
- */
+/** Persist the latest snapshot for this user and book, even without Background Sync. */
 export async function enqueueProgress(entry: ProgressSnapshot): Promise<boolean> {
-  if (!isSyncSupported()) return false;
+  const snapshot = captureProgress(entry);
+  if (!snapshot.expected_user_id || typeof indexedDB === 'undefined') return false;
   try {
     const db = await openQueue();
-    await new Promise<void>((resolve, reject) => {
-      const tx = db.transaction(STORE, 'readwrite');
-      tx.objectStore(STORE).put(entry);
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
-    });
-    db.close();
-    const registration = await navigator.serviceWorker.ready;
-    const syncManager = (
-      registration as unknown as { sync: { register(tag: string): Promise<void> } }
-    ).sync;
-    await syncManager.register(SYNC_TAG);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const tx = db.transaction(STORE, 'readwrite');
+        const store = tx.objectStore(STORE);
+        const request = store.get([snapshot.expected_user_id!, snapshot.bookId]);
+        request.onsuccess = () => {
+          if (!request.result || request.result.captured_at < snapshot.captured_at) store.put(snapshot);
+        };
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+    } finally { db.close(); }
+    if (isSyncSupported()) {
+      void navigator.serviceWorker.ready.then((registration) =>
+        (registration as unknown as { sync: { register(tag: string): Promise<void> } }).sync.register(SYNC_TAG)
+      ).catch(() => {});
+    }
     return true;
-  } catch {
-    return false;
-  }
+  } catch { return false; }
 }
 
-export async function clearProgress(bookId: string): Promise<void> {
-  if (typeof indexedDB === 'undefined') return;
+/** Remove only snapshots acknowledged by the server; retain newer queued positions. */
+export async function clearProgress(bookId: string, userId?: string | null, capturedAt?: number): Promise<void> {
+  if (!userId || capturedAt === undefined || typeof indexedDB === 'undefined') return;
   try {
     const db = await openQueue();
-    await new Promise<void>((resolve, reject) => {
-      const tx = db.transaction(STORE, 'readwrite');
-      tx.objectStore(STORE).delete(bookId);
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
-    });
-    db.close();
-  } catch {
-    // Ignore; the entry will be replayed and coalesced by a later sync.
-  }
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const tx = db.transaction(STORE, 'readwrite');
+        const store = tx.objectStore(STORE);
+        const key = [userId, bookId];
+        const request = store.get(key);
+        request.onsuccess = () => {
+          if (request.result && request.result.captured_at <= capturedAt) store.delete(key);
+        };
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+    } finally { db.close(); }
+  } catch { /* Retain the entry for retry. */ }
+}
+
+/** Replay only the currently authenticated user's journal, including Safari fallback. */
+export async function replayProgressQueue(): Promise<void> {
+  const userId = getAuthUserId();
+  if (replaying || !userId || typeof indexedDB === 'undefined') return;
+  replaying = true;
+  try {
+    const db = await openQueue();
+    let entries: ProgressSnapshot[];
+    try {
+      entries = await new Promise((resolve, reject) => {
+        const request = db.transaction(STORE, 'readonly').objectStore(STORE).getAll();
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+    } finally { db.close(); }
+    for (const entry of entries) {
+      if (entry.expected_user_id !== userId || getAuthUserId() !== userId) continue;
+      try {
+        await api.post(`/books/${entry.bookId}/progress`, entry);
+        await clearProgress(entry.bookId, userId, entry.captured_at);
+      } catch { /* Retry when the network or session recovers. */ }
+    }
+  } catch { /* IndexedDB may be unavailable. */ }
+  finally { replaying = false; }
 }

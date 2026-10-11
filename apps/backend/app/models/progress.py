@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, Integer, Text, ForeignKey, String, UniqueConstraint, func
+from sqlalchemy import BigInteger, Boolean, DateTime, Float, Integer, Text, ForeignKey, String, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -25,6 +25,8 @@ class ReadingProgress(Base):
     book_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("books.id"), nullable=False
     )
+    captured_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    position_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     position: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     location: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     progress: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)

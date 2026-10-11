@@ -1,23 +1,30 @@
 'use client';
 
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
 import { SessionProvider, signOut, useSession } from 'next-auth/react';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Toaster } from '@/components/ui/toast';
-import { setAuthSession, setUnauthorizedHandler } from '@/lib/api-client';
+import { getAuthUserId, setAuthSession, setUnauthorizedHandler } from '@/lib/api-client';
 import { AuthKeepAlive } from '@/hooks/use-auth-keepalive';
 import { Reconnect } from '@/hooks/use-reconnect';
 import { routes } from '@/lib/routes';
+import { useProgressQueueSync } from '@/hooks/use-progress-queue-sync';
 import { registerServiceWorker } from '@/lib/service-worker';
 
 function SessionTokenBridge() {
+  useProgressQueueSync();
   const { data: session, status } = useSession();
+  const queryClient = useQueryClient();
+  const previousUser = useRef<string | null | undefined>(undefined);
 
   useEffect(() => {
     if (status !== 'loading') {
       setAuthSession(session?.accessToken ?? null, session?.sessionToken ?? null);
+      const currentUser = getAuthUserId();
+      if (previousUser.current !== undefined && previousUser.current !== currentUser) queryClient.clear();
+      previousUser.current = currentUser;
     }
-  }, [session?.accessToken, session?.sessionToken, status]);
+  }, [session?.accessToken, session?.sessionToken, status, queryClient]);
 
   useEffect(() => {
     setUnauthorizedHandler(() => signOut({ callbackUrl: routes.login }));

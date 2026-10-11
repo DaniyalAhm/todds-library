@@ -81,3 +81,10 @@ class BookList(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+class BookStats(BaseModel):
+    total: int
+    in_progress: int
+    completed: int
+    not_started: int

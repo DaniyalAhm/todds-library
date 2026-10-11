@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
 import os
 from uuid import UUID
 
@@ -11,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies import get_current_user, get_current_user_from_request, get_db, get_meili_client, require_admin
 from app.models.user import User
-from app.schemas.book import BookCreate, BookList, BookResponse, ChapterResponse
+from app.schemas.book import BookCreate, BookList, BookResponse, BookStats, ChapterResponse
 from app.schemas.bookmark import BookmarkCreate, BookmarkResponse
 from app.schemas.progress import ReadingProgressResponse, UpdateProgress, UpdateBookReview, BookRatingsResponse
 from app.services.book_service import (
@@ -23,8 +21,10 @@ from app.services.book_service import (
     get_book_cover,
     get_bookmarks,
     get_books,
+    get_book_stats,
     get_progress,
     get_book_ratings,
+    database_timestamp,
     update_progress,
 )
 from app.services.search_service import remove_book_from_meili
@@ -39,6 +39,7 @@ async def list_books(
     author: str | None = Query(None),
     series: str | None = Query(None),
     format: str | None = Query(None, alias="format"),
+    in_progress: bool = Query(False),
     sort: str = Query("title"),
     order: str = Query("asc"),
     limit: int = Query(50, ge=1, le=200),
@@ -52,6 +53,7 @@ async def list_books(
         "author": author,
         "series": series,
         "format": format,
+        "in_progress": in_progress,
         "sort": sort,
         "order": order,
         "limit": limit,
@@ -59,6 +61,14 @@ async def list_books(
     }
     books, total = await get_books(db, filters, current_user.id)
     return BookList(items=books, total=total, limit=limit, offset=offset)
+
+
+@router.get("/stats", response_model=BookStats)
+async def book_stats(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    return await get_book_stats(db, current_user.id)
 
 
 @router.get("/{book_id}", response_model=BookResponse)
@@ -153,7 +163,9 @@ async def update_reading_progress(
     book = await get_book_for_user(db, book_id, current_user.id)
     if book is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
-    progress = await update_progress(db, current_user.id, book_id, data.position, data.progress, data.location)
+    if data.expected_user_id is not None and data.expected_user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Progress belongs to a different user")
+    progress = await update_progress(db, current_user.id, book_id, data.position, data.progress, data.location, data.captured_at)
     return progress
 
 
@@ -227,7 +239,8 @@ async def complete_book(
         raise HTTPException(status_code=400, detail="Read or listen to at least 85% before marking this book complete")
     if not progress.completed:
         progress.completed = True
-        progress.completed_at = datetime.now(timezone.utc)
+        progress.completed_at = database_timestamp(db)
+        progress.last_updated = database_timestamp(db)
         await db.commit()
         await db.refresh(progress)
     return progress
@@ -248,10 +261,11 @@ async def save_book_review(
         raise HTTPException(status_code=400, detail="Complete this book before leaving a review")
     if not progress.completed:
         progress.completed = True
-        progress.completed_at = datetime.now(timezone.utc)
+        progress.completed_at = database_timestamp(db)
     progress.rating = data.rating
     progress.review_text = data.review_text.strip() or None
-    progress.review_updated_at = datetime.now(timezone.utc)
+    progress.review_updated_at = database_timestamp(db)
+    progress.last_updated = database_timestamp(db)
     await db.commit()
     await db.refresh(progress)
     return progress

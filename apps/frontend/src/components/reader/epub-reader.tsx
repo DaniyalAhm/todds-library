@@ -43,7 +43,7 @@ interface EpubReaderProps {
 
 export function EpubReader({ bookId }: EpubReaderProps) {
   const { data: book } = useBook(bookId);
-  const { data: progress } = useBookProgress(bookId);
+  const { data: progress, isSuccess: progressLoaded } = useBookProgress(bookId);
   const updateProgress = useUpdateProgress(bookId);
   const createBookmark = useCreateBookmark(bookId);
 
@@ -95,7 +95,7 @@ export function EpubReader({ bookId }: EpubReaderProps) {
   }, [updateProgress]);
 
   const initBook = useCallback(async () => {
-    if (!book?.download_url || !viewerRef.current) return;
+    if (!book?.download_url || !viewerRef.current || !progressLoaded) return;
 
     try {
       setLoadError('');
@@ -163,7 +163,7 @@ export function EpubReader({ bookId }: EpubReaderProps) {
       logger.player.error('Failed to load epub:', err);
       setLoadError('Book file failed to load.');
     }
-  }, [book?.download_url]);
+  }, [book?.download_url, progressLoaded]);
 
   useEffect(() => {
     setTheme('dark');

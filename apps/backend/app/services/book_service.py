@@ -3,10 +3,11 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import uuid
 from pathlib import Path
 from uuid import UUID
 
-from sqlalchemy import and_, delete, func, or_, select
+from sqlalchemy import and_, case, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -56,6 +57,14 @@ async def get_books(
         except ValueError:
             pass
 
+    if filters.get("in_progress"):
+        conditions.append(Book.reading_progress.any(and_(
+            ReadingProgress.user_id == user_id,
+            ReadingProgress.progress > 0,
+            ReadingProgress.progress < 1,
+            ReadingProgress.completed.is_(False),
+        )))
+
     query = query.where(and_(*conditions))
 
     count_query = select(func.count(Book.id))
@@ -70,15 +79,37 @@ async def get_books(
         "created_at": Book.created_at,
         "updated_at": Book.updated_at,
         "series": Book.series,
+        "progress_updated_at": (
+            select(func.coalesce(ReadingProgress.position_updated_at, ReadingProgress.last_updated))
+            .where(ReadingProgress.book_id == Book.id, ReadingProgress.user_id == user_id)
+            .scalar_subquery()
+        ),
     }
     sort_column = sort_columns.get(filters.get("sort"), Book.title)
     if filters.get("order") == "desc":
         sort_column = sort_column.desc()
-    query = query.order_by(sort_column).offset(filters.get("offset", 0)).limit(filters.get("limit", 50))
+    query = query.order_by(sort_column, Book.id).offset(filters.get("offset", 0)).limit(filters.get("limit", 50))
     result = await db.execute(query)
     books = list(result.scalars().all())
     await attach_user_progress(db, books, user_id)
     return books, total
+
+
+async def get_book_stats(db: AsyncSession, user_id: UUID) -> dict[str, int]:
+    completed = or_(ReadingProgress.completed.is_(True), ReadingProgress.progress >= 1)
+    in_progress = and_(ReadingProgress.completed.is_(False), ReadingProgress.progress > 0, ReadingProgress.progress < 1)
+    result = await db.execute(
+        select(
+            func.count(Book.id).label("total"),
+            func.coalesce(func.sum(case((completed, 1), else_=0)), 0).label("completed"),
+            func.coalesce(func.sum(case((in_progress, 1), else_=0)), 0).label("in_progress"),
+        )
+        .outerjoin(ReadingProgress, and_(ReadingProgress.book_id == Book.id, ReadingProgress.user_id == user_id))
+        .where(_user_library_condition(user_id))
+    )
+    counts = dict(result.one()._mapping)
+    counts["not_started"] = counts["total"] - counts["completed"] - counts["in_progress"]
+    return counts
 
 
 async def get_book(db: AsyncSession, book_id: UUID) -> Book | None:
@@ -128,32 +159,39 @@ async def get_book_cover(db: AsyncSession, book_id: UUID) -> str | None:
     return None
 
 
+def database_timestamp(db: AsyncSession):
+    return func.clock_timestamp() if db.get_bind().dialect.name == 'postgresql' else func.current_timestamp()
+
+
 async def update_progress(
-    db: AsyncSession, user_id: UUID, book_id: UUID, position: float, progress: float, location: str | None = None
+    db: AsyncSession, user_id: UUID, book_id: UUID, position: float, progress: float,
+    location: str | None = None, captured_at: int | None = None,
 ) -> ReadingProgress:
-    result = await db.execute(
-        select(ReadingProgress).where(
-            ReadingProgress.user_id == user_id,
-            ReadingProgress.book_id == book_id,
-        )
-    )
-    rp = result.scalar_one_or_none()
-    if rp is None:
-        rp = ReadingProgress(
-            user_id=user_id,
-            book_id=book_id,
-            position=position,
-            progress=progress,
-            location=location,
-        )
-        db.add(rp)
+    """Atomically save a user's newest snapshot, including intentional backward seeks."""
+    if db.get_bind().dialect.name == 'postgresql':
+        from sqlalchemy.dialects.postgresql import insert
     else:
-        rp.position = position
-        rp.progress = progress
-        rp.location = location
+        from sqlalchemy.dialects.sqlite import insert
+    values = dict(
+        id=uuid.uuid4(), user_id=user_id, book_id=book_id,
+        position=position, progress=progress, location=location,
+        captured_at=captured_at,
+        position_updated_at=database_timestamp(db), last_updated=database_timestamp(db),
+    )
+    statement = insert(ReadingProgress).values(**values)
+    changed = {key: getattr(statement.excluded, key) for key in (
+        'position', 'progress', 'location', 'captured_at', 'position_updated_at', 'last_updated',
+    )}
+    statement = statement.on_conflict_do_update(
+        index_elements=['user_id', 'book_id'], set_=changed,
+        where=or_(ReadingProgress.captured_at.is_(None), ReadingProgress.captured_at < captured_at) if captured_at is not None else ReadingProgress.captured_at.is_(None),
+    )
+    await db.execute(statement)
     await db.commit()
-    await db.refresh(rp)
-    return rp
+    result = await db.execute(select(ReadingProgress).where(
+        ReadingProgress.user_id == user_id, ReadingProgress.book_id == book_id,
+    ).execution_options(populate_existing=True))
+    return result.scalar_one()
 
 
 async def get_progress(

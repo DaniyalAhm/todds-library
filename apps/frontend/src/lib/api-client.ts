@@ -96,6 +96,28 @@ export function getAccessToken(): string | null {
   return accessToken;
 }
 
+export function getAuthUserId(): string | null {
+  try {
+    const encoded = accessToken?.split('.')[1];
+    if (!encoded) return null;
+    const payload = JSON.parse(atob(encoded.replace(/-/g, '+').replace(/_/g, '/')));
+    return typeof payload.sub === 'string' ? payload.sub : null;
+  } catch {
+    return null;
+  }
+}
+
+let lastCaptureTime = 0;
+export function captureProgress<T extends object>(data: T) {
+  const existing = data as { expected_user_id?: string | null; captured_at?: number };
+  lastCaptureTime = Math.max(Date.now(), lastCaptureTime + 1);
+  return {
+    ...data,
+    expected_user_id: existing.expected_user_id ?? getAuthUserId(),
+    captured_at: existing.captured_at ?? lastCaptureTime,
+  };
+}
+
 export function getSessionToken(): string | null {
   return authSessionToken;
 }
@@ -230,8 +252,10 @@ export function getApiUrl(path: string): string {
 
 export function postProgressWithKeepalive(
   bookId: string,
-  data: { progress: number; position: number; location?: string | null }
+  data: { progress: number; position: number; location?: string | null; expected_user_id?: string | null; captured_at?: number }
 ) {
+  const snapshot = captureProgress(data);
+  if (!snapshot.expected_user_id || snapshot.expected_user_id !== getAuthUserId()) return;
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (accessToken) {
     headers['Authorization'] = `Bearer ${accessToken}`;
@@ -239,9 +263,9 @@ export function postProgressWithKeepalive(
   void fetch(buildApiUrl(`/books/${bookId}/progress`).toString(), {
     method: 'POST',
     headers,
-    body: JSON.stringify(data),
+    body: JSON.stringify(snapshot),
     keepalive: true,
-  });
+  }).catch(() => {});
 }
 
 async function doRequestOnce<T>(
@@ -314,6 +338,11 @@ async function request<T>(
   config?: RequestConfig
 ): Promise<T> {
   await awaitSessionToken();
+  if (method === 'POST' && /^\/books\/[^/]+\/progress$/.test(path) && body && typeof body === 'object') {
+    body = captureProgress(body);
+    const owner = (body as { expected_user_id?: string | null }).expected_user_id;
+    if (owner && owner !== getAuthUserId()) throw new Error('Progress belongs to a different user');
+  }
   const url = buildApiUrl(path);
 
   if (config?.params) {

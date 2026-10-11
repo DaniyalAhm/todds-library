@@ -183,6 +183,21 @@ export function useDeleteBookmark(bookId: string) {
   });
 }
 
+export function useDeleteBook() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: string | { bookId: string; deleteFiles?: boolean }) => {
+      const bookId = typeof input === 'string' ? input : input.bookId;
+      const deleteFiles = typeof input === 'string' ? false : !!input.deleteFiles;
+      const qs = deleteFiles ? '?delete_files=true' : '';
+      return api.delete<void>(`/books/${bookId}${qs}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['books'] });
+    },
+  });
+}
+
 export function useUpdateBookMetadata(bookId: string) {
   const queryClient = useQueryClient();
   return useMutation({

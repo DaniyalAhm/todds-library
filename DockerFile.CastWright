@@ -1,6 +1,8 @@
 FROM ubuntu:24.04
 
-ENV DEBIAN_FRONTEND=noninteractive
+ENV DEBIAN_FRONTEND=noninteractive \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
 
 RUN apt-get update && apt-get install -y \
     python3.12 \
@@ -55,6 +57,8 @@ RUN npm --prefix server ci
 ENV ACCELERATOR=nvidia
 
 RUN node server/tts-sidecar/scripts/bootstrap-venv.mjs python3.12
+
+RUN rm -rf /root/.cache/pip
 
 
 # --------------------------------------------------

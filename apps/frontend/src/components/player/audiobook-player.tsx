@@ -15,6 +15,14 @@ import { Captions, CaptionsOff, Headphones, ListTree, Maximize, Minimize, PanelT
 import { SubtitleOverlay, loadSubtitleFile } from '@/components/reader/subtitle-overlay';
 import type { SubtitleCue } from '@/components/reader/subtitle-overlay';
 import { logger } from '@/lib/logger';
+import {
+  exitDocumentFullscreen,
+  getFullscreenElement,
+  isFullscreenApiEnabled,
+  isStandaloneDisplayMode,
+  requestElementFullscreen,
+  shouldUseCssFullscreenFallback,
+} from '@/lib/fullscreen';
 
 interface AudiobookPlayerProps {
   bookId: string;
@@ -49,8 +57,10 @@ export function AudiobookPlayer({ bookId }: AudiobookPlayerProps) {
   const [subtitleMode, setSubtitleMode] = useState<'panel' | 'overlay'>('panel');
   const containerRef = useRef<HTMLDivElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isCssFullscreen, setIsCssFullscreen] = useState(false);
   const [showFullscreenControls, setShowFullscreenControls] = useState(true);
   const fullscreenControlsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isVisualFullscreen = isFullscreen || isCssFullscreen;
 
   // Ensure global player knows which book is active (persists across navigation)
   useEffect(() => {
@@ -90,11 +100,11 @@ export function AudiobookPlayer({ bookId }: AudiobookPlayerProps) {
   }, [chapterIndex, chapters, bookId, audio.isMultiTrackDirect]);
 
   useEffect(() => {
-    const getFsElement = () => document.fullscreenElement || (document as any).webkitFullscreenElement || null;
     const onFullscreenChange = () => {
-      const el = getFsElement();
+      const el = getFullscreenElement();
       const nowFullscreen = !!el;
       setIsFullscreen(nowFullscreen);
+      if (nowFullscreen) setIsCssFullscreen(false);
       if (nowFullscreen) {
         setShowFullscreenControls(true);
         if (fullscreenControlsTimerRef.current) clearTimeout(fullscreenControlsTimerRef.current);
@@ -107,8 +117,12 @@ export function AudiobookPlayer({ bookId }: AudiobookPlayerProps) {
         }
       }
     };
-    const onFullscreenError = () => {
-      toast({ title: 'Fullscreen failed', description: 'Browser blocked fullscreen (check secure context / permissions)', variant: 'destructive' });
+    const onFullscreenError = (e: Event) => {
+      const detail = (e as any)?.message || (e as any)?.target?.toString() || 'fullscreenerror event';
+      logger.fs.warn('fullscreenerror event:', detail, 'enabled:', document.fullscreenEnabled, 'secure:', window.isSecureContext, 'protocol:', location.protocol);
+      if (!shouldUseCssFullscreenFallback()) {
+        toast({ title: 'Fullscreen failed', description: 'Browser blocked fullscreen (check secure context / permissions)', variant: 'destructive' });
+      }
     };
     document.addEventListener('fullscreenchange', onFullscreenChange);
     document.addEventListener('webkitfullscreenchange', onFullscreenChange as any);
@@ -126,17 +140,52 @@ export function AudiobookPlayer({ bookId }: AudiobookPlayerProps) {
     };
   }, []);
 
+  useEffect(() => {
+    if (!isCssFullscreen) return;
+    const previousBodyOverflow = document.body.style.overflow;
+    const previousHtmlOverflow = document.documentElement.style.overflow;
+    document.body.style.overflow = 'hidden';
+    document.documentElement.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = previousBodyOverflow;
+      document.documentElement.style.overflow = previousHtmlOverflow;
+    };
+  }, [isCssFullscreen]);
+
+  const enterCssFullscreen = (source: string) => {
+    logger.fs.info(`${source}: entering CSS fullscreen fallback`);
+    setIsCssFullscreen(true);
+    setShowFullscreenControls(true);
+    if (fullscreenControlsTimerRef.current) clearTimeout(fullscreenControlsTimerRef.current);
+    fullscreenControlsTimerRef.current = setTimeout(() => setShowFullscreenControls(false), 3000);
+  };
+
   const toggleFullscreen = async () => {
     try {
-      const fsEl = document.fullscreenElement || (document as any).webkitFullscreenElement;
-      if (fsEl) {
-        if (document.exitFullscreen) await document.exitFullscreen();
-        else if ((document as any).webkitExitFullscreen) await (document as any).webkitExitFullscreen();
+      const fsEl = getFullscreenElement();
+      if (fsEl || isCssFullscreen) {
+        if (fsEl) await exitDocumentFullscreen();
+        setIsCssFullscreen(false);
+        setIsFullscreen(false);
+        setShowFullscreenControls(true);
+        if (fullscreenControlsTimerRef.current) {
+          clearTimeout(fullscreenControlsTimerRef.current);
+          fullscreenControlsTimerRef.current = null;
+        }
         return;
       }
-      if (!document.fullscreenEnabled && !(document as any).webkitFullscreenEnabled) {
+      if (!isFullscreenApiEnabled()) {
+        if (shouldUseCssFullscreenFallback()) {
+          enterCssFullscreen('Fullscreen API unavailable');
+          return;
+        }
+        logger.fs.warn('Fullscreen not supported / blocked (secure:', window.isSecureContext, 'protocol:', location.protocol, 'isSecureContext:', window.isSecureContext, ')');
         toast({ title: 'Fullscreen not supported', description: 'This browser or context blocks fullscreen', variant: 'destructive' });
         return;
+      }
+      // Pre-flight: log secure context for docker diagnostics
+      if (!window.isSecureContext && !isStandaloneDisplayMode()) {
+        logger.fs.warn('Insecure context pre-flight: protocol', location.protocol, 'isSecureContext', window.isSecureContext, 'fullscreenEnabled', document.fullscreenEnabled);
       }
       const el = containerRef.current;
       if (!el) return;
@@ -144,21 +193,24 @@ export function AudiobookPlayer({ bookId }: AudiobookPlayerProps) {
       if ((el as any)._fsPending) return;
       (el as any)._fsPending = true;
       try {
-        if (el.requestFullscreen) {
-          await el.requestFullscreen();
-          logger.fs.info('requestFullscreen succeeded (secure:', window.isSecureContext, 'protocol:', location.protocol, ')');
-        } else if ((el as any).webkitRequestFullscreen) {
-          await (el as any).webkitRequestFullscreen();
-          logger.fs.info('webkitRequestFullscreen succeeded');
-        } else toast({ title: 'Fullscreen not supported', variant: 'destructive' });
+        await requestElementFullscreen(el);
+        logger.fs.info('requestFullscreen succeeded (secure:', window.isSecureContext, 'protocol:', location.protocol, ')');
       } finally {
         setTimeout(() => {
           if (el) (el as any)._fsPending = false;
         }, 500);
       }
     } catch (err: any) {
-      logger.fs.warn('Fullscreen toggle failed:', err);
-      toast({ title: 'Fullscreen failed', description: err?.message || 'Browser blocked fullscreen. Use secure context (https/localhost) and user gesture.', variant: 'destructive' });
+      const detail =
+        err instanceof Error || (typeof DOMException !== 'undefined' && err instanceof DOMException)
+          ? `${err.name}: ${err.message}${(err as any).code ? ` code:${(err as any).code}` : ''}${(err as any).stack ? `\n${(err as any).stack}` : ''} secure:${window.isSecureContext} protocol:${location.protocol} hasEl:${!!containerRef.current} enabled:${document.fullscreenEnabled}`
+          : String(err);
+      logger.fs.warn('Fullscreen toggle failed:', detail);
+      if (shouldUseCssFullscreenFallback()) {
+        enterCssFullscreen('Fullscreen request failed');
+        return;
+      }
+      toast({ title: 'Fullscreen failed', description: err?.message || detail, variant: 'destructive' });
     }
   };
 
@@ -226,7 +278,7 @@ export function AudiobookPlayer({ bookId }: AudiobookPlayerProps) {
 
   return (
     <div ref={containerRef} className="flex h-full min-h-0 flex-col">
-      <div className={cn('flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row', isFullscreen && 'hidden')}>
+      <div className={cn('flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row', isVisualFullscreen && 'hidden')}>
         <div className="flex min-h-0 min-w-0 flex-1 flex-col items-center overflow-y-auto px-4 py-3 sm:p-6 lg:justify-center lg:p-8">
           <div className="mb-3 shrink-0 sm:mb-8">
             <div className="relative mx-auto aspect-[2/3] w-28 overflow-hidden rounded-xl bg-muted shadow-2xl sm:w-48 md:w-56 lg:w-64">
@@ -341,8 +393,8 @@ export function AudiobookPlayer({ bookId }: AudiobookPlayerProps) {
                 {subtitleMode === 'panel' ? 'Panel' : 'Overlay'}
               </Button>
               <Button type="button" variant="outline" size="sm" onClick={toggleFullscreen} className="justify-center px-2">
-                {isFullscreen ? <Minimize className="mr-2 h-4 w-4" /> : <Maximize className="mr-2 h-4 w-4" />}
-                {isFullscreen ? 'Exit' : 'Fullscreen'}
+                {isVisualFullscreen ? <Minimize className="mr-2 h-4 w-4" /> : <Maximize className="mr-2 h-4 w-4" />}
+                {isVisualFullscreen ? 'Exit' : 'Fullscreen'}
               </Button>
               <SleepTimer
                 isActive={!!sleepTimerEnd}
@@ -360,8 +412,15 @@ export function AudiobookPlayer({ bookId }: AudiobookPlayerProps) {
         </div>
       </div>
 
-      {isFullscreen && (
-        <div className="relative flex flex-1 flex-col bg-black" onMouseMove={handleFullscreenMouseMove} onMouseEnter={() => setShowFullscreenControls(true)}>
+      {isVisualFullscreen && (
+        <div
+          className={cn('relative flex flex-1 flex-col bg-black', isCssFullscreen && 'fixed inset-0 z-[100] h-[100dvh] w-screen')}
+          style={{ paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)' } as React.CSSProperties}
+          onMouseMove={handleFullscreenMouseMove}
+          onMouseEnter={() => setShowFullscreenControls(true)}
+          onTouchStart={handleFullscreenMouseMove}
+          onTouchMove={handleFullscreenMouseMove}
+        >
           {book?.cover && (
             <>
               <img src={book.cover} alt="" className="absolute inset-0 h-full w-full object-cover blur-2xl opacity-30" />

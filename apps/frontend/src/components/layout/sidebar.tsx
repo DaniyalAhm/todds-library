@@ -40,7 +40,7 @@ const adminItems = [
   { href: routes.admin, label: 'Admin', icon: Shield },
   { href: routes.adminUsers, label: 'Users', icon: Users },
   { href: routes.adminMetadata, label: 'Metadata', icon: BookMarked },
-  { href: routes.adminSettings, label: 'Settings', icon: Cpu },
+  { href: routes.adminSettings, label: 'Subtitle Generation Settings', icon: Cpu },
 ];
 
 export function Sidebar({ collapsed, onToggle, mobileOpen = false, onMobileClose }: SidebarProps) {

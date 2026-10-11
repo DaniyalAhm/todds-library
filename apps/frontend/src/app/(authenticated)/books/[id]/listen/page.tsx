@@ -1,11 +1,23 @@
 'use client';
 
+import dynamic from 'next/dynamic';
 import { useParams, useRouter } from 'next/navigation';
 import { useBook } from '@/hooks/use-books';
-import { AudiobookPlayer } from '@/components/player/audiobook-player';
 import { Button } from '@/components/ui/button';
 import { ArrowLeft } from 'lucide-react';
 import { routes } from '@/lib/routes';
+
+const AudiobookPlayer = dynamic(
+  () => import('@/components/player/audiobook-player').then((m) => m.AudiobookPlayer),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex h-full items-center justify-center bg-background">
+        <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+      </div>
+    ),
+  }
+);
 
 export default function ListenPage() {
   const params = useParams();

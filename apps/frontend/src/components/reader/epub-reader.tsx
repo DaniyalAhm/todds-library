@@ -28,6 +28,14 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { logger } from '@/lib/logger';
+import { useContinuousProgressSync } from '@/hooks/use-continuous-progress-sync';
+import {
+  exitDocumentFullscreen,
+  getFullscreenElement,
+  isFullscreenApiEnabled,
+  requestElementFullscreen,
+  shouldUseCssFullscreenFallback,
+} from '@/lib/fullscreen';
 
 interface EpubReaderProps {
   bookId: string;
@@ -39,6 +47,7 @@ export function EpubReader({ bookId }: EpubReaderProps) {
   const updateProgress = useUpdateProgress(bookId);
   const createBookmark = useCreateBookmark(bookId);
 
+  const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<HTMLDivElement>(null);
   const bookRef = useRef<any>(null);
   const renditionRef = useRef<any>(null);
@@ -54,7 +63,28 @@ export function EpubReader({ bookId }: EpubReaderProps) {
   const [currentLocation, setCurrentLocation] = useState('');
   const [loadError, setLoadError] = useState('');
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isCssFullscreen, setIsCssFullscreen] = useState(false);
+  const isVisualFullscreen = isFullscreen || isCssFullscreen;
   const [showToolbar, setShowToolbar] = useState(true);
+
+  // Track spine index for continuous sync (updated on relocated)
+  const epubPositionRef = useRef<{ index: number; total: number }>({ index: 0, total: 1 });
+
+  // Continuous 0.5s sync: POST current CFI/location to backend → DB
+  useContinuousProgressSync(
+    !!bookId && !!currentLocation,
+    useCallback(() => {
+      if (!currentLocation) return null;
+      const { index, total } = epubPositionRef.current;
+      return {
+        bookId,
+        position: index,
+        progress: total > 0 ? index / total : 0,
+        location: currentLocation,
+      };
+    }, [bookId, currentLocation]),
+    500
+  );
 
   useEffect(() => {
     progressLocationRef.current = progress?.location;
@@ -121,6 +151,7 @@ export function EpubReader({ bookId }: EpubReaderProps) {
           setCurrentLocation(start.cfi);
           const total = bookRef.current?.spine?.length || 1;
           const current = start.index || 0;
+          epubPositionRef.current = { index: current, total };
           updateProgressRef.current.mutate({
             progress: current / total,
             position: current,
@@ -167,13 +198,15 @@ export function EpubReader({ bookId }: EpubReaderProps) {
   }, [fontSize]);
 
   useEffect(() => {
-    const getFsElement = () => document.fullscreenElement || (document as any).webkitFullscreenElement || null;
     const onFullscreenChange = () => {
-      setIsFullscreen(!!getFsElement());
+      const nowFullscreen = !!getFullscreenElement();
+      setIsFullscreen(nowFullscreen);
+      if (nowFullscreen) setIsCssFullscreen(false);
       setShowToolbar(true);
     };
-    const onFullscreenError = () => {
-      logger.fs.warn('Fullscreen failed (epub) fullscreenEnabled:', document.fullscreenEnabled, 'secure:', window.isSecureContext);
+    const onFullscreenError = (e: Event) => {
+      const detail = (e as any)?.message || String(e);
+      logger.fs.warn('Fullscreen failed (epub) event:', detail, 'enabled:', document.fullscreenEnabled, 'secure:', window.isSecureContext, 'protocol:', location.protocol);
     };
     document.addEventListener('fullscreenchange', onFullscreenChange);
     document.addEventListener('webkitfullscreenchange', onFullscreenChange as any);
@@ -186,6 +219,18 @@ export function EpubReader({ bookId }: EpubReaderProps) {
       document.removeEventListener('webkitfullscreenerror', onFullscreenError as any);
     };
   }, []);
+
+  useEffect(() => {
+    if (!isCssFullscreen) return;
+    const previousBodyOverflow = document.body.style.overflow;
+    const previousHtmlOverflow = document.documentElement.style.overflow;
+    document.body.style.overflow = 'hidden';
+    document.documentElement.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = previousBodyOverflow;
+      document.documentElement.style.overflow = previousHtmlOverflow;
+    };
+  }, [isCssFullscreen]);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -201,7 +246,7 @@ export function EpubReader({ bookId }: EpubReaderProps) {
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
 
-    if (isFullscreen) {
+    if (isVisualFullscreen) {
       if (y < 50) {
         setShowToolbar((v) => !v);
         return;
@@ -231,30 +276,50 @@ export function EpubReader({ bookId }: EpubReaderProps) {
 
   const toggleFullscreen = async () => {
     try {
-      const fsEl = document.fullscreenElement || (document as any).webkitFullscreenElement;
-      if (fsEl) {
-        if (document.exitFullscreen) await document.exitFullscreen();
-        else if ((document as any).webkitExitFullscreen) await (document as any).webkitExitFullscreen();
+      const fsEl = getFullscreenElement();
+      if (fsEl || isCssFullscreen) {
+        if (fsEl) await exitDocumentFullscreen();
+        setIsCssFullscreen(false);
+        setIsFullscreen(false);
+        setShowToolbar(true);
         return;
       }
-      if (!document.fullscreenEnabled && !(document as any).webkitFullscreenEnabled) {
-        logger.fs.warn('Fullscreen not supported / blocked (secure:', window.isSecureContext, 'protocol:', location.protocol, ')');
+      if (!isFullscreenApiEnabled()) {
+        if (shouldUseCssFullscreenFallback()) {
+          logger.fs.info('epub entering CSS fullscreen fallback: Fullscreen API unavailable');
+          setIsCssFullscreen(true);
+          setShowToolbar(true);
+          return;
+        }
+        logger.fs.warn('Fullscreen not supported / blocked (secure:', window.isSecureContext, 'protocol:', location.protocol, 'isSecureContext:', window.isSecureContext, ')');
         return;
       }
-      const el = viewerRef.current;
+      if (!window.isSecureContext) {
+        logger.fs.warn('Insecure context pre-flight (epub) protocol', location.protocol, 'isSecureContext', window.isSecureContext);
+      }
+      const el = containerRef.current || viewerRef.current;
       if (!el) return;
       if ((el as any)._fsPending) return;
       (el as any)._fsPending = true;
       try {
-        if (el.requestFullscreen) await el.requestFullscreen();
-        else if ((el as any).webkitRequestFullscreen) await (el as any).webkitRequestFullscreen();
+        await requestElementFullscreen(el);
+        logger.fs.info('epub requestFullscreen succeeded (secure:', window.isSecureContext, ')');
       } finally {
         setTimeout(() => {
           if (el) (el as any)._fsPending = false;
         }, 500);
       }
     } catch (err: any) {
-      logger.fs.warn('Fullscreen toggle failed:', err);
+      const detail =
+        err instanceof Error || (typeof DOMException !== 'undefined' && err instanceof DOMException)
+          ? `${err.name}: ${err.message}${(err as any).code ? ` code:${(err as any).code}` : ''} secure:${window.isSecureContext} protocol:${location.protocol}`
+          : String(err);
+      logger.fs.warn('Fullscreen toggle failed (epub):', detail);
+      if (shouldUseCssFullscreenFallback()) {
+        logger.fs.info('epub entering CSS fullscreen fallback: native request failed');
+        setIsCssFullscreen(true);
+        setShowToolbar(true);
+      }
     }
   };
 
@@ -288,10 +353,17 @@ export function EpubReader({ bookId }: EpubReaderProps) {
   };
 
   return (
-    <div className="flex h-full flex-col">
+    <div
+      ref={containerRef}
+      className={cn(
+        'flex h-full flex-col',
+        isCssFullscreen && 'fixed inset-0 z-[100] h-[100dvh] w-screen bg-background'
+      )}
+      style={isCssFullscreen ? ({ paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)' } as React.CSSProperties) : undefined}
+    >
       <div className={cn(
         'flex flex-wrap items-center justify-between gap-2 border-b border-border bg-card px-2 py-2 sm:px-4 transition-transform duration-200',
-        isFullscreen && !showToolbar && '-translate-y-full'
+        isVisualFullscreen && !showToolbar && '-translate-y-full'
       )}>
         <div className="flex shrink-0 items-center gap-2">
           <Button
@@ -335,7 +407,7 @@ export function EpubReader({ bookId }: EpubReaderProps) {
             <Type className="h-5 w-5" />
           </Button>
           <Button variant="ghost" size="icon" onClick={toggleFullscreen}>
-            {isFullscreen ? <Minimize className="h-4 w-4" /> : <Maximize className="h-4 w-4" />}
+            {isVisualFullscreen ? <Minimize className="h-4 w-4" /> : <Maximize className="h-4 w-4" />}
           </Button>
           <div className="ml-1 flex rounded-md border border-border sm:ml-2">
             <Button

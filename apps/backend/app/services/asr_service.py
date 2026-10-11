@@ -346,7 +346,11 @@ def _get_model_pipeline():
     return _MODEL_PIPELINE
 
 
-_COVERAGE_THRESHOLD = 0.7
+# Minimum fraction of the source duration that must be covered by the last
+# cue's end time. Raised from 0.7 after Dune Messiah showed 30-85s tail gaps
+# (e.g. chapter_0054: 30s of cues for a 98s file, coverage 0.31; several
+# chapters at ~0.80) slipping through without the ffmpeg-decode retry.
+_COVERAGE_THRESHOLD = 0.9
 
 
 def transcribe(

@@ -10,6 +10,7 @@ from app.models.book import Book
 from app.models.book import BookFormat
 from app.models.library import Library, LibraryType
 from app.services.scanner_service import add_book_to_db, parse_book_file, scan_library
+from app.scanner import file_parser
 
 
 @pytest.mark.asyncio
@@ -154,6 +155,7 @@ async def test_scanner_filters_files_by_library_type(db_session, test_user, tmp_
         fmt: BookFormat,
         _library_path: str | None = None,
         _audio_files: list[str] | None = None,
+        **_kwargs,
     ) -> dict:
         return {
             "title": path,
@@ -484,3 +486,118 @@ async def test_scanner_allows_grouped_audiobook_larger_than_int32(db_session, te
 
     assert book is not None
     assert book.file_size == 4_816_577_360
+
+
+@pytest.mark.asyncio
+async def test_rescan_skips_hashing_unchanged_files(db_session, test_user, tmp_path, monkeypatch):
+    media = tmp_path / "media"
+    (media / "Frank Herbert" / "Dune").mkdir(parents=True)
+    (media / "Frank Herbert" / "Dune" / "Dune-01.mp3").write_bytes(b"a" * 1000)
+    (media / "Frank Herbert" / "Dune" / "Dune-02.mp3").write_bytes(b"b" * 1000)
+    (media / "Standalone.epub").write_bytes(b"c" * 500)
+
+    library = Library(
+        name="Mixed",
+        path=str(media),
+        type=LibraryType.mixed,
+        user_id=test_user.id,
+    )
+    db_session.add(library)
+    await db_session.commit()
+    await db_session.refresh(library)
+
+    hash_calls = 0
+    real_hash = file_parser.get_file_hash
+
+    async def counting_hash(path: str) -> str:
+        nonlocal hash_calls
+        hash_calls += 1
+        return await real_hash(path)
+
+    async def fake_parse(path, fmt, _library_path=None, _audio_files=None, **_kwargs):
+        return {
+            "title": path,
+            "file_path": path,
+            "file_format": fmt.value,
+            "file_size": 1,
+            "file_hash": path,
+        }
+
+    async def no_enrich(_db, book):
+        return book
+
+    monkeypatch.setattr("app.services.scanner_service.get_file_hash", counting_hash)
+    monkeypatch.setattr("app.services.scanner_service.parse_book_file", fake_parse)
+    monkeypatch.setattr("app.services.scanner_service.enrich_book_metadata", no_enrich)
+    monkeypatch.setattr("app.services.scanner_service.index_book_in_meili", lambda *_a, **_k: None)
+
+    first = await scan_library(db_session, object(), library.id)
+    assert first["new"] == 2
+    assert hash_calls > 0
+
+    hash_calls = 0
+    second = await scan_library(db_session, object(), library.id)
+    assert second == {"new": 0, "updated": 0, "removed": 0, "new_ids": [], "updated_ids": []}
+    assert hash_calls == 0
+
+    books = (await db_session.execute(select(Book))).scalars().all()
+    assert len(books) == 2
+
+
+@pytest.mark.asyncio
+async def test_rescan_rehashes_only_changed_files(db_session, test_user, tmp_path, monkeypatch):
+    media = tmp_path / "media"
+    media.mkdir()
+    target = media / "Book.epub"
+    other = media / "Other.epub"
+    target.write_bytes(b"x" * 100)
+    other.write_bytes(b"y" * 100)
+
+    library = Library(
+        name="Ebooks",
+        path=str(media),
+        type=LibraryType.ebook,
+        user_id=test_user.id,
+    )
+    db_session.add(library)
+    await db_session.commit()
+    await db_session.refresh(library)
+
+    hash_calls = 0
+    real_hash = file_parser.get_file_hash
+
+    async def counting_hash(path: str) -> str:
+        nonlocal hash_calls
+        hash_calls += 1
+        return await real_hash(path)
+
+    async def fake_parse(path, fmt, _library_path=None, _audio_files=None, **_kwargs):
+        return {
+            "title": path,
+            "file_path": path,
+            "file_format": fmt.value,
+            "file_size": 1,
+            "file_hash": path,
+        }
+
+    async def no_enrich(_db, book):
+        return book
+
+    monkeypatch.setattr("app.services.scanner_service.get_file_hash", counting_hash)
+    monkeypatch.setattr("app.services.scanner_service.parse_book_file", fake_parse)
+    monkeypatch.setattr("app.services.scanner_service.enrich_book_metadata", no_enrich)
+    monkeypatch.setattr("app.services.scanner_service.index_book_in_meili", lambda *_a, **_k: None)
+
+    await scan_library(db_session, object(), library.id)
+
+    # Same size, different content + fresh mtime -> must re-hash and update in place.
+    target.write_bytes(b"z" * 100)
+
+    hash_calls = 0
+    result = await scan_library(db_session, object(), library.id)
+    assert hash_calls == 1
+    assert result["new"] == 0
+    assert result["updated"] == 1
+
+    books = (await db_session.execute(select(Book))).scalars().all()
+    assert len(books) == 2

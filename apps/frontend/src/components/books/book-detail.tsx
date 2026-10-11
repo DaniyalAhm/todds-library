@@ -2,7 +2,9 @@
 
 import { useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
-import { useBook, useBookProgress, useBookmarks, useDeleteBookmark } from '@/hooks/use-books';
+import { useAuth } from '@/hooks/use-auth';
+import { useBook, useBookProgress, useBookmarks, useDeleteBook, useDeleteBookmark } from '@/hooks/use-books';
+import { toast } from '@/components/ui/toast';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -30,10 +32,25 @@ interface BookDetailProps {
 export function BookDetail({ bookId }: BookDetailProps) {
   const router = useRouter();
   const { data: session } = useSession();
+  const { user } = useAuth();
   const { data: book, isLoading } = useBook(bookId);
   const { data: progress } = useBookProgress(bookId);
   const { data: bookmarks } = useBookmarks(bookId);
   const deleteBookmark = useDeleteBookmark(bookId);
+  const deleteBook = useDeleteBook();
+
+  const handleDeleteBook = async () => {
+    if (!book) return;
+    if (!window.confirm(`Delete "${book.title}"? This removes it from your library (files on disk are kept).`)) return;
+    try {
+      await deleteBook.mutateAsync(bookId);
+      toast({ title: 'Book deleted', description: `"${book.title}" was removed from your library.`, variant: 'success' });
+      router.push(routes.books);
+    } catch (e: any) {
+      const msg = e?.response?.data?.detail || e?.message || 'Failed to delete book';
+      toast({ title: 'Delete failed', description: msg, variant: 'destructive' });
+    }
+  };
 
   if (isLoading) {
     return (
@@ -140,6 +157,17 @@ export function BookDetail({ bookId }: BookDetailProps) {
               <Button className="w-full sm:w-auto" variant="outline" onClick={handleDownload}>
                 <Download className="mr-2 h-4 w-4" />
                 Download
+              </Button>
+            )}
+            {user?.isAdmin && (
+              <Button
+                className="w-full sm:w-auto"
+                variant="destructive"
+                onClick={handleDeleteBook}
+                disabled={deleteBook.isPending}
+              >
+                <Trash2 className="mr-2 h-4 w-4" />
+                {deleteBook.isPending ? 'Deleting...' : 'Delete'}
               </Button>
             )}
           </div>

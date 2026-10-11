@@ -1,11 +1,16 @@
 FROM python:3.12-slim-bookworm AS builder
 
+ENV PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc libpq-dev libsndfile1 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY pyproject.toml .
+COPY app/ ./app/
 ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu124
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir torch --index-url $TORCH_INDEX_URL && \
@@ -36,9 +41,12 @@ print(
     f"ctranslate2={ctranslate2_version}, cuda={cuda_version}, cudnn={cudnn_version}"
 )
 PY
-COPY app/ ./app/
 
 FROM python:3.12-slim-bookworm
+
+ENV PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONDONTWRITEBYTECODE=1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 ffmpeg curl libsndfile1 \

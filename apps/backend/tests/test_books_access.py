@@ -7,6 +7,8 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.book import Book, BookFormat
+from app.models.bookmark import Bookmark
+from app.models.chapter import Chapter
 from app.models.library import Library, LibraryType
 from app.models.progress import ReadingProgress
 from app.models.user import User
@@ -93,6 +95,53 @@ async def test_book_mutations_are_scoped_to_current_users_libraries(client, db_s
 
     bookmarks = await client.get(f"/books/{owner_book.id}/bookmarks")
     assert bookmarks.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_admin_can_delete_book_and_its_children(client, db_session, test_user, test_library):
+    book = Book(
+        id=uuid.uuid4(),
+        library_id=test_library.id,
+        title="Delete Me",
+        author="current",
+        file_path="/tmp/current/delete-me.epub",
+        file_format=BookFormat.epub,
+        file_size=10,
+        file_hash="delete-me",
+    )
+    db_session.add(book)
+    await db_session.commit()
+    await db_session.refresh(book)
+
+    db_session.add(Chapter(id=uuid.uuid4(), book_id=book.id, index=1, title="Ch 1"))
+    db_session.add(ReadingProgress(user_id=test_user.id, book_id=book.id, position=1.0, progress=0.5))
+    db_session.add(Bookmark(user_id=test_user.id, book_id=book.id, position=2.0, note="hi"))
+    await db_session.commit()
+
+    response = await client.delete(f"/books/{book.id}")
+    assert response.status_code == 204
+
+    for model, column in (
+        (Book, Book.id),
+        (Chapter, Chapter.book_id),
+        (ReadingProgress, ReadingProgress.book_id),
+        (Bookmark, Bookmark.book_id),
+    ):
+        remaining = await db_session.execute(select(func.count(model.id)).where(column == book.id))
+        assert remaining.scalar_one() == 0
+
+    again = await client.delete(f"/books/{book.id}")
+    assert again.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_delete_book_is_scoped_to_current_users_libraries(client, db_session):
+    _owner, _library, owner_book = await create_user_library_book(
+        db_session, username="owner", title="Owner Book"
+    )
+
+    response = await client.delete(f"/books/{owner_book.id}")
+    assert response.status_code == 404
 
 
 @pytest.mark.asyncio

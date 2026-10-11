@@ -88,12 +88,14 @@ export function Header({ onMenuToggle }: HeaderProps) {
             <DropdownMenuSeparator />
             <DropdownMenuItem onClick={() => router.push(routes.settings)}>
               <User className="mr-2 h-4 w-4" />
-              <span>Profile</span>
+              <span>Profile & Settings</span>
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => router.push(routes.settings)}>
-              <Settings className="mr-2 h-4 w-4" />
-              <span>Settings</span>
-            </DropdownMenuItem>
+            {user?.isAdmin && (
+              <DropdownMenuItem onClick={() => router.push(routes.adminSettings)}>
+                <Settings className="mr-2 h-4 w-4" />
+                <span>Subtitle Generation Settings</span>
+              </DropdownMenuItem>
+            )}
             <DropdownMenuSeparator />
             <DropdownMenuItem onClick={logout}>
               <LogOut className="mr-2 h-4 w-4" />

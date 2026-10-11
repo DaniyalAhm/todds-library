@@ -1,9 +1,11 @@
 'use client';
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
   useApplyBookMetadata,
   useBooks,
+  useDeleteBook,
+  useGenerateAudibleChapters,
   useLookupBookMetadata,
   useRefreshBookMetadata,
   useUpdateBookMetadata,
@@ -13,17 +15,59 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Check, Edit3, Search, RefreshCw, BookOpen, Save } from 'lucide-react';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { Check, Edit3, Search, RefreshCw, BookOpen, Save, ListTree, Trash2 } from 'lucide-react';
+import { toast } from '@/components/ui/toast';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+
+type MetadataSort = 'missing' | 'updated' | 'title';
+
+function missingCount(book: any): number {
+  return [!book.author, !book.description, !book.publisher].filter(Boolean).length;
+}
+
+function isIncomplete(book: any): boolean {
+  return missingCount(book) > 0;
+}
 
 export default function MetadataAdminPage() {
   const [search, setSearch] = useState('');
+  const [sort, setSort] = useState<MetadataSort>('missing');
+  const [incompleteOnly, setIncompleteOnly] = useState(false);
   const { data, isLoading } = useBooks({
     search: search || undefined,
     limit: 50,
     sort: 'updated_at',
   });
 
-  const books = data?.items || [];
+  const books = useMemo(() => {
+    const items = [...(data?.items || [])];
+    const filtered = incompleteOnly ? items.filter(isIncomplete) : items;
+    switch (sort) {
+      case 'missing':
+        return filtered.sort((a, b) => missingCount(b) - missingCount(a) || (b.updated_at || '').localeCompare(a.updated_at || ''));
+      case 'title':
+        return filtered.sort((a, b) => (a.title || '').localeCompare(b.title || ''));
+      case 'updated':
+      default:
+        return filtered.sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || ''));
+    }
+  }, [data?.items, sort, incompleteOnly]);
+
+  const incompleteTotal = useMemo(() => (data?.items || []).filter(isIncomplete).length, [data?.items]);
 
   return (
     <div className="space-y-6">
@@ -31,17 +75,41 @@ export default function MetadataAdminPage() {
         <h1 className="text-3xl font-bold text-foreground">Metadata Management</h1>
         <p className="mt-1 text-muted-foreground">
           Review and edit book metadata
+          {incompleteTotal > 0 && ` · ${incompleteTotal} book${incompleteTotal === 1 ? '' : 's'} missing metadata`}
         </p>
       </div>
 
-      <div className="relative">
-        <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-        <Input
-          placeholder="Search books to edit metadata..."
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          className="pl-10"
-        />
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+        <div className="relative min-w-0 flex-1">
+          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            placeholder="Search books to edit metadata..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="pl-10"
+          />
+        </div>
+        <div className="flex items-center gap-3">
+          <Select value={sort} onValueChange={(v) => setSort(v as MetadataSort)}>
+            <SelectTrigger className="w-48" aria-label="Sort books">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="missing">Missing metadata first</SelectItem>
+              <SelectItem value="updated">Recently updated</SelectItem>
+              <SelectItem value="title">Title A–Z</SelectItem>
+            </SelectContent>
+          </Select>
+          <label className="flex shrink-0 cursor-pointer items-center gap-2 text-sm text-muted-foreground">
+            <Input
+              type="checkbox"
+              checked={incompleteOnly}
+              onChange={(e) => setIncompleteOnly(e.target.checked)}
+              className="h-4 w-4"
+            />
+            Incomplete only
+          </label>
+        </div>
       </div>
 
       {isLoading ? (
@@ -71,6 +139,8 @@ export default function MetadataAdminPage() {
 
 function MetadataEditCard({ book }: { book: any }) {
   const [editing, setEditing] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [deleteFiles, setDeleteFiles] = useState(false);
   const [title, setTitle] = useState(book.title || '');
   const [author, setAuthor] = useState(book.author || '');
   const [description, setDescription] = useState(book.description || '');
@@ -81,8 +151,10 @@ function MetadataEditCard({ book }: { book: any }) {
   const refreshMetadata = useRefreshBookMetadata(book.id);
   const lookupMetadata = useLookupBookMetadata(book.id);
   const applyMetadata = useApplyBookMetadata(book.id);
+  const generateAudible = useGenerateAudibleChapters(book.id);
+  const deleteBook = useDeleteBook();
 
-  const hasMissingFields = !book.author || !book.description || !book.publisher;
+  const hasMissingFields = isIncomplete(book);
   const candidates = lookupMetadata.data?.results || [];
 
   const handleSave = async () => {
@@ -95,6 +167,26 @@ function MetadataEditCard({ book }: { book: any }) {
       series: series || null,
     });
     setEditing(false);
+  };
+
+  const handleDelete = async () => {
+    try {
+      await deleteBook.mutateAsync(
+        deleteFiles ? { bookId: book.id, deleteFiles: true } : book.id,
+      );
+      toast({
+        title: 'Book deleted',
+        description: deleteFiles
+          ? `"${book.title}" was removed from your library and its files were deleted from disk.`
+          : `"${book.title}" was removed from your library.`,
+        variant: 'success',
+      });
+      setConfirmOpen(false);
+      setDeleteFiles(false);
+    } catch (e: any) {
+      const msg = e?.response?.data?.detail || e?.message || 'Failed to delete book';
+      toast({ title: 'Delete failed', description: msg, variant: 'destructive' });
+    }
   };
 
   return (
@@ -141,8 +233,37 @@ function MetadataEditCard({ book }: { book: any }) {
             >
               Auto
             </Button>
+            {(book.has_audiobook && (book.audio_track_count || 0) <= 1) && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={async () => {
+                  const overwrite = (book as any).chapters?.length > 0;
+                  try {
+                    const res = await generateAudible.mutateAsync(overwrite ? { overwrite: true } : undefined);
+                    toast({ title: 'Audible sections created', description: `Created ${res.chapter_count} sections from Audible`, variant: 'success' });
+                  } catch (e: any) {
+                    const msg = e?.response?.data?.detail || e?.message || 'Failed to generate Audible sections';
+                    toast({ title: 'Audible sections failed', description: msg, variant: 'destructive' });
+                  }
+                }}
+                disabled={generateAudible.isPending}
+                title={(book as any).chapters?.length > 0 ? 'Force replace sections from Audible (admin)' : 'Generate sections from Audible (single-track)'}
+              >
+                <ListTree className="h-4 w-4" />
+              </Button>
+            )}
             <Button variant="ghost" size="sm" onClick={() => setEditing(!editing)}>
               {editing ? <Save className="h-4 w-4" /> : <Edit3 className="h-4 w-4" />}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setConfirmOpen(true)}
+              disabled={deleteBook.isPending}
+              title="Delete book from library"
+            >
+              <Trash2 className="h-4 w-4 text-destructive" />
             </Button>
           </div>
         </div>
@@ -236,6 +357,39 @@ function MetadataEditCard({ book }: { book: any }) {
           ))}
         </CardContent>
       )}
+      <Dialog open={confirmOpen} onOpenChange={(o) => !o && setConfirmOpen(false)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete “{book.title}”?</DialogTitle>
+            <DialogDescription>
+              This removes the book from your library. Optionally delete its
+              whole book folder from the library directory as well as its
+              cover, subtitles, and generated audio. This cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <label className="flex cursor-pointer items-center gap-2 text-sm">
+            <Input
+              type="checkbox"
+              checked={deleteFiles}
+              onChange={(e) => setDeleteFiles(e.target.checked)}
+              className="h-4 w-4"
+            />
+            Also delete files from disk (whole book folder)
+          </label>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleDelete}
+              disabled={deleteBook.isPending}
+            >
+              {deleteFiles ? 'Delete book + files' : 'Delete book'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Card>
   );
 }

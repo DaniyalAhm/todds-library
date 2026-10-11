@@ -20,11 +20,34 @@ const SERVER_LEVEL_COLOR: Record<string, string> = {
 };
 
 // Fire-and-forget POST to Next.js API that writes to docker logs (server console)
+function serializeArg(a: unknown): string {
+  if (typeof a === 'string') return a;
+  if (a instanceof Error || (typeof DOMException !== 'undefined' && a instanceof DOMException)) {
+    const err = a as any;
+    const name = err.name || 'Error';
+    const msg = err.message || '';
+    const code = err.code !== undefined ? ` code:${err.code}` : '';
+    const stack = err.stack ? `\n${err.stack}` : '';
+    return `${name}: ${msg}${code}${stack}`;
+  }
+  if (a && typeof a === 'object') {
+    try {
+      const s = JSON.stringify(a, Object.getOwnPropertyNames(a as object));
+      if (s !== '{}') return s;
+      // Non-enumerable DOMException / TypeError → fallback to String
+      return String(a);
+    } catch {
+      return String(a);
+    }
+  }
+  return String(a);
+}
+
 function postToServer(category: string, level: Level, args: unknown[]) {
   if (typeof window === 'undefined') return;
   // Avoid logging the logger's own POST
   try {
-    const message = args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
+    const message = args.map(serializeArg).join(' ');
     // Use keepalive so it survives pagehide
     fetch('/api/logs', {
       method: 'POST',

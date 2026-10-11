@@ -8,6 +8,7 @@ import { usePlayer } from '@/hooks/use-player';
 import { useMediaSession } from '@/hooks/use-media-session';
 import { AudioPlayerContext } from './audio-player-context';
 import { logger } from '@/lib/logger';
+import { useContinuousProgressSync } from '@/hooks/use-continuous-progress-sync';
 
 export function PlayerHost({ children }: { children?: React.ReactNode }) {
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -873,7 +874,10 @@ export function PlayerHost({ children }: { children?: React.ReactNode }) {
     else setLoadError('Audio failed to load.');
   }, [audioSrc, book?.audio_download_url, capturePositionForReload, fallbackToDirect, isHlsStreamUrl, setupHlsStream, triedHls]);
 
-  // periodic saveProgress every 30s (onListen equivalent)
+  // Continuous 0.5s sync: frontend POSTs timestamps to backend which writes to DB
+  useContinuousProgressSync(!!isPlaying && !!bookId, getProgressSnapshot, 500);
+
+  // periodic saveProgress every 30s (onListen equivalent) — kept as fallback heartbeat
   useEffect(() => {
     if (!isPlaying) return;
     const id = setInterval(() => saveProgress(), 30000);

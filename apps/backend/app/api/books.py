@@ -7,13 +7,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from meilisearch import Client as MeiliClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.dependencies import get_current_user, get_current_user_from_request, get_db, get_meili_client
+from app.dependencies import get_current_user, get_current_user_from_request, get_db, get_meili_client, require_admin
 from app.models.user import User
 from app.schemas.book import BookCreate, BookList, BookResponse, ChapterResponse
 from app.schemas.bookmark import BookmarkCreate, BookmarkResponse
 from app.schemas.progress import ReadingProgressResponse, UpdateProgress
 from app.services.book_service import (
     create_bookmark,
+    delete_book,
     delete_bookmark,
     get_book,
     get_book_for_user,
@@ -23,6 +24,7 @@ from app.services.book_service import (
     get_progress,
     update_progress,
 )
+from app.services.search_service import remove_book_from_meili
 
 router = APIRouter()
 
@@ -66,6 +68,24 @@ async def get_book_detail(
     if book is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
     return book
+
+
+@router.delete("/{book_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_book_endpoint(
+    book_id: UUID,
+    delete_files: bool = Query(False),
+    current_user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+    meili: MeiliClient = Depends(get_meili_client),
+):
+    book = await get_book_for_user(db, book_id, current_user.id)
+    if book is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
+    await delete_book(db, book, delete_files=delete_files)
+    try:
+        remove_book_from_meili(meili, book_id)
+    except Exception:
+        pass
 
 
 @router.get("/{book_id}/cover")

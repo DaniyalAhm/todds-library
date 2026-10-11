@@ -1,12 +1,35 @@
 'use client';
 
+import dynamic from 'next/dynamic';
 import { useParams, useRouter } from 'next/navigation';
 import { useBook } from '@/hooks/use-books';
-import { EpubReader } from '@/components/reader/epub-reader';
-import { PdfReader } from '@/components/reader/pdf-reader';
 import { Button } from '@/components/ui/button';
 import { ArrowLeft } from 'lucide-react';
 import { routes } from '@/lib/routes';
+
+const EpubReader = dynamic(
+  () => import('@/components/reader/epub-reader').then((m) => m.EpubReader),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex h-full items-center justify-center bg-background">
+        <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+      </div>
+    ),
+  }
+);
+
+const PdfReader = dynamic(
+  () => import('@/components/reader/pdf-reader').then((m) => m.PdfReader),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex h-full items-center justify-center bg-background">
+        <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+      </div>
+    ),
+  }
+);
 
 export default function ReadPage() {
   const params = useParams();

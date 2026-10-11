@@ -548,3 +548,58 @@ async def generate_book_chapters(
         )
         logger.exception('Chapter detection failed for "%s"', book_title)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
+
+@router.post("/books/{book_id}/generate/audible-chapters")
+async def generate_audible_chapters(
+    book_id: UUID,
+    overwrite: bool = Query(False),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Explicit admin endpoint to create sections from Audible chapter_info (single-track only)."""
+    book = await get_book_for_user(db, book_id, current_user.id)
+    if book is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
+    if not book.has_audiobook:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Not an audiobook")
+    from app.services.metadata_service import lookup_metadata, apply_metadata_to_book, _is_single_track
+
+    if not _is_single_track(book):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Multi-track audiobooks already have per-track chapters")
+
+    # Only admin can force overwrite
+    if overwrite and not current_user.is_admin:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin required to overwrite chapters")
+
+    # If book already has chapters and not overwriting, refuse
+    if book.chapters and not overwrite:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Book already has chapters. Use overwrite=true to replace from Audible")
+
+    # Fetch Audible metadata (prefer ASIN)
+    results = await lookup_metadata(db, book_id=book.id, asin=book.asin, isbn=book.isbn, title=book.title, author=book.author, force_refresh=False)
+    audible_data = next((r for r in results if r.get("source") == "audible" and r.get("chapters")), None)
+    # If not in cache, force refresh
+    if not audible_data:
+        results = await lookup_metadata(db, book_id=book.id, asin=book.asin, isbn=book.isbn, title=book.title, author=book.author, force_refresh=True)
+        audible_data = next((r for r in results if r.get("source") == "audible" and r.get("chapters")), None)
+
+    if not audible_data or not audible_data.get("chapters"):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No Audible chapter data found for this book")
+
+    book_title = book.title or Path(book.file_path).stem
+    await _add_log(db, book.id, None, None, book_title, "started", f"Generating {len(audible_data['chapters'])} sections from Audible...")
+
+    await apply_metadata_to_book(db, book, audible_data, overwrite=overwrite)
+
+    await _add_log(db, book.id, None, None, book_title, "completed", f"Created {len(audible_data['chapters'])} sections from Audible")
+
+    # Refresh chapters relationship
+    await db.refresh(book)
+
+    return {
+        "status": "completed",
+        "chapter_count": len(audible_data["chapters"]),
+        "chapters": [{"title": c["title"], "start_offset_ms": c["start_offset_ms"], "end_offset_ms": c["end_offset_ms"]} for c in audible_data["chapters"]],
+        "source": "audible",
+    }

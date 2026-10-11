@@ -34,15 +34,26 @@ export async function POST(request: NextRequest) {
     const lvlColor = LEVEL_COLOR[level] || LEVEL_COLOR.info;
     const timestamp = new Date().toISOString().slice(11, 23); // HH:MM:SS.mmm
 
+    // Truncate very long messages but keep stack traces (up to 4000 chars)
+    const safeMessage = message.length > 4000 ? `${message.slice(0, 4000)}…[truncated]` : message;
+
     // This console.log goes to docker logs frontend (stdout)
     // eslint-disable-next-line no-console
-    console.log(`${lvlColor}[${timestamp}]${RESET} ${catColor}[${category}]${RESET} ${lvlColor}${level.toUpperCase()}${RESET} ${message}`);
+    console.log(`${lvlColor}[${timestamp}]${RESET} ${catColor}[${category}]${RESET} ${lvlColor}${level.toUpperCase()}${RESET} ${safeMessage}`);
 
-    // Also log user-agent for debugging iPad vs desktop fullscreen
-    const ua = request.headers.get('user-agent')?.slice(0, 120) || '';
+    // Also log user-agent for debugging iPad vs desktop fullscreen (256 chars to capture full Safari UA)
+    const ua = request.headers.get('user-agent')?.slice(0, 256) || '';
     if (ua) {
       // eslint-disable-next-line no-console
       console.log(`\x1b[90m  ↳ UA: ${ua}${RESET}`);
+    }
+    // Log secure context hint if message mentions fullscreen/secure
+    if (/fullscreen|secure/i.test(message)) {
+      const referer = request.headers.get('referer')?.slice(0, 200) || '';
+      if (referer) {
+        // eslint-disable-next-line no-console
+        console.log(`\x1b[90m  ↳ Referer: ${referer}${RESET}`);
+      }
     }
 
     return NextResponse.json({ ok: true });

@@ -159,29 +159,6 @@ services:
 
   # Castwright now runs on HOST (port 9990) — see CASTWRIGHT_URL above.
   # This service is kept for optional docker-mode (profile castwright-docker).
-  castwright:
-    container_name: castwright
-    profiles: ["castwright-docker"]
-    networks:
-      - ai-net
-    build:
-      context: .
-      dockerfile: ./DockerFile.CastWright
-    volumes:
-      - /mnt/2tb_jellyfin/castwright_audiobooks/:/app/audiobook-workspace
-    ports:
-      - "${CastWright_PORT:-9990}:9990"
-
-    environment:
-      OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
-
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: ["0", "1"]
-              capabilities: [gpu]
 
 
 networks:

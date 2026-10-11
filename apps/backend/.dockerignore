@@ -6,3 +6,11 @@ __pycache__/
 .gitignore
 *.md
 .dockerignore
+tests/
+.pytest_cache/
+*.db
+*.sqlite*
+*.egg-info/
+alembic/versions/__pycache__/
+requirements*.txt
+Dockerfile.dev

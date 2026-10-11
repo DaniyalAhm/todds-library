@@ -26,6 +26,7 @@ import {
 import { formatDuration, formatDate, formatFileSize, getProgressPercent } from '@/lib/utils';
 import { routes } from '@/lib/routes';
 import { CastwrightChapterGenerate } from '@/components/books/castwright-chapter-generate';
+import { BookMetadataSearch } from '@/components/books/book-metadata-search';
 
 export default function BookDetailPage() {
   const params = useParams();
@@ -213,6 +214,16 @@ export default function BookDetailPage() {
               </Button>
             )}
           </div>
+
+          {user?.isAdmin && (
+            <BookMetadataSearch
+              bookId={id}
+              title={book.title}
+              author={book.author}
+              isbn={book.isbn}
+              asin={book.asin}
+            />
+          )}
 
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
             {book.publisher && (

@@ -32,6 +32,10 @@ from app.services.search_service import index_book_in_meili, remove_book_from_me
 EBOOK_FORMATS = {BookFormat.epub, BookFormat.pdf, BookFormat.mobi, BookFormat.cbz, BookFormat.cbr}
 AUDIOBOOK_FORMATS = {BookFormat.mp3, BookFormat.m4b, BookFormat.flac, BookFormat.ogg, BookFormat.aac, BookFormat.wma}
 
+# Max simultaneous full-file hashes during a scan. Hashing is disk-I/O
+# bound; a small pool keeps throughput up without thrashing the disk.
+_HASH_CONCURRENCY = 8
+
 
 def is_allowed_for_library(library: Library, fmt: BookFormat) -> bool:
     if library.type.value == "ebook":
@@ -57,12 +61,56 @@ async def scan_library(
         return {"new": 0, "updated": 0, "removed": 0}
     logger.info("[bold yellow][SCANNER][/] scanning library '%s' at %s", library.name, library.path)
 
+    # Load existing books first: their stored size/mtime/hash triples let
+    # the walk below skip re-hashing files that haven't changed.
+    result = await db.execute(
+        select(Book).where(Book.library_id == library_id)
+    )
+    existing_book_list = list(result.scalars().all())
+    existing_books = {b.file_hash: b for b in existing_book_list if b.file_hash}
+    existing_books_by_path = {b.file_path: b for b in existing_book_list}
+    existing_by_group_path: dict[str, Book] = {}
+    known_by_path: dict[str, tuple[int, int | None, str]] = {}
+    known_audio_stats: dict[str, dict] = {}
+    for b in existing_book_list:
+        meta = b.extra_metadata or {}
+        g = meta.get("group_path") or meta.get("book_folder_path")
+        if g:
+            existing_by_group_path[g] = b
+        if b.file_hash:
+            known_by_path[b.file_path] = (
+                b.file_size,
+                meta.get("file_mtime_ns"),
+                b.file_hash,
+            )
+        for track_path, stats in (meta.get("audio_file_stats") or {}).items():
+            known_audio_stats[track_path] = stats
+    matched_existing_ids = set()
+
     # Walk directory and find all book files. Companion ebook/audio files are
     # considered for mixed-media merging even when the library type is ebook or
     # audiobook; standalone entries still respect the configured library type.
-    found_files = {}
-    ebook_groups: dict[str, list[tuple[str, dict]]] = {}
-    audio_group_entries: dict[str, tuple[str, dict]] = {}
+    #
+    # Phase A below only stats files (cheap) — no content hashing yet.
+    dir_cache: dict = {}
+    hash_sem = asyncio.Semaphore(_HASH_CONCURRENCY)
+
+    def cached_content_hash(path: str, size: int, mtime_ns: int) -> str | None:
+        """Stored content hash when size+mtime match the previous scan."""
+        known = known_by_path.get(path)
+        if known is not None and known[0] == size and known[1] == mtime_ns:
+            return known[2]
+        stats = known_audio_stats.get(path)
+        if (
+            stats is not None
+            and stats.get("s") == size
+            and stats.get("m") == mtime_ns
+        ):
+            return stats.get("h")
+        return None
+
+    standalone: list[dict] = []
+    ebook_pending: dict[str, list[dict]] = {}
     audio_groups: dict[str, list[dict]] = {}
     for root, _dirs, files in os.walk(base_path):
         for filename in files:
@@ -71,16 +119,21 @@ async def scan_library(
             allowed_standalone = is_allowed_for_library(library, fmt)
             if not allowed_standalone and fmt not in EBOOK_FORMATS | AUDIOBOOK_FORMATS:
                 continue
+            try:
+                st = filepath.stat()
+            except OSError:
+                continue
 
             if fmt in AUDIOBOOK_FORMATS:
-                metadata = parse_filename(str(filepath), str(base_path))
+                metadata = parse_filename(str(filepath), str(base_path), dir_cache)
                 group_key = metadata.get("book_folder_path")
                 if group_key:
                     audio_groups.setdefault(group_key, []).append(
                         {
                             "path": str(filepath),
                             "format": fmt,
-                            "size": filepath.stat().st_size,
+                            "size": st.st_size,
+                            "mtime_ns": st.st_mtime_ns,
                             "metadata": metadata,
                             "allowed_standalone": allowed_standalone,
                         }
@@ -92,49 +145,119 @@ async def scan_library(
             if not allowed_standalone and fmt not in EBOOK_FORMATS:
                 continue
 
-            file_hash = await get_file_hash(str(filepath))
-            entry = {
+            item = {
                 "path": str(filepath),
                 "format": fmt,
-                "size": filepath.stat().st_size,
+                "size": st.st_size,
+                "mtime_ns": st.st_mtime_ns,
             }
             if fmt in EBOOK_FORMATS:
-                metadata = parse_filename(str(filepath), str(base_path))
+                metadata = parse_filename(str(filepath), str(base_path), dir_cache)
                 group_key = metadata.get("book_folder_path")
                 if group_key:
-                    ebook_groups.setdefault(group_key, []).append((file_hash, entry))
+                    ebook_pending.setdefault(group_key, []).append(item)
             if allowed_standalone:
-                found_files[file_hash] = entry
+                standalone.append(item)
+
+    # Phase B: resolve content hashes — reuse stored hashes for unchanged
+    # files, hash the rest concurrently in a bounded pool.
+    to_hash: list[str] = []
+    queued: set[str] = set()
+
+    def want_hash(path: str, size: int, mtime_ns: int) -> str | None:
+        hit = cached_content_hash(path, size, mtime_ns)
+        if hit is None and path not in queued:
+            queued.add(path)
+            to_hash.append(path)
+        return hit
+
+    hash_targets: list[dict] = list(standalone)
+    for entries in ebook_pending.values():
+        hash_targets.extend(entries)
+    for entries in audio_groups.values():
+        hash_targets.extend(entries)
+    for target in hash_targets:
+        target["content_hash"] = want_hash(target["path"], target["size"], target["mtime_ns"])
+
+    if to_hash:
+        async def _bounded_hash(path: str) -> str:
+            async with hash_sem:
+                return await get_file_hash(path)
+
+        by_path: dict[str, list[dict]] = {}
+        for target in hash_targets:
+            by_path.setdefault(target["path"], []).append(target)
+        resolved = await asyncio.gather(*(_bounded_hash(p) for p in to_hash))
+        for path, digest in zip(to_hash, resolved):
+            for target in by_path[path]:
+                if target["content_hash"] is None:
+                    target["content_hash"] = digest
+
+    # Phase C: assemble found_files / group entries from resolved hashes.
+    found_files = {}
+    ebook_groups: dict[str, list[tuple[str, dict]]] = {}
+    audio_group_entries: dict[str, tuple[str, dict]] = {}
+
+    def _single_entry(item: dict, file_hash: str) -> dict:
+        return {
+            "path": item["path"],
+            "format": item["format"],
+            "size": item["size"],
+            "file_mtime_ns": item["mtime_ns"],
+            "single_file_hash": file_hash,
+        }
+
+    for item in standalone:
+        file_hash = item["content_hash"]
+        found_files[file_hash] = _single_entry(item, file_hash)
+
+    for group_key, entries in ebook_pending.items():
+        ebook_groups[group_key] = [
+            (item["content_hash"], _single_entry(item, item["content_hash"]))
+            for item in entries
+        ]
 
     for group_path, files in audio_groups.items():
         if not files:
             continue
         files.sort(key=audio_sort_key)
         if len(files) == 1:
-            filepath = files[0]["path"]
-            file_hash = await get_file_hash(filepath)
+            track = files[0]
+            file_hash = track["content_hash"]
             entry = {
-                "path": filepath,
-                "format": files[0]["format"],
-                "size": files[0]["size"],
-                "audiobook_path": filepath,
-                "audiobook_format": files[0]["format"].value,
-                "audio_files": [filepath],
+                "path": track["path"],
+                "format": track["format"],
+                "size": track["size"],
+                "file_mtime_ns": track["mtime_ns"],
+                "single_file_hash": file_hash,
+                "audiobook_path": track["path"],
+                "audiobook_format": track["format"].value,
+                "audio_files": [track["path"]],
+                "audio_file_stats": {
+                    track["path"]: {"s": track["size"], "m": track["mtime_ns"], "h": file_hash}
+                },
                 "group_path": group_path,
             }
-            if files[0].get("allowed_standalone", True):
+            if track.get("allowed_standalone", True):
                 found_files[file_hash] = entry
             audio_group_entries[group_path] = (file_hash, entry)
             continue
 
-        file_hash = await grouped_file_hash(files)
+        parts = [(t["path"], t["size"], t["content_hash"]) for t in files]
+        file_hash = grouped_file_hash_from_parts(parts)
         entry = {
             "path": files[0]["path"],
             "format": files[0]["format"],
             "size": sum(file_info["size"] for file_info in files),
+            "file_mtime_ns": files[0]["mtime_ns"],
+            "single_file_hash": files[0]["content_hash"],
             "audiobook_path": files[0]["path"],
             "audiobook_format": files[0]["format"].value,
             "audio_files": [file_info["path"] for file_info in files],
+            "audio_file_stats": {
+                t["path"]: {"s": t["size"], "m": t["mtime_ns"], "h": t["content_hash"]}
+                for t in files
+            },
             "group_path": group_path,
         }
         if any(file_info.get("allowed_standalone", True) for file_info in files):
@@ -156,29 +279,17 @@ async def scan_library(
             "path": ebook_info["path"],
             "format": ebook_info["format"],
             "size": ebook_info["size"] + audio_info["size"],
+            "file_mtime_ns": ebook_info.get("file_mtime_ns"),
+            "single_file_hash": ebook_hash,
             "ebook_path": ebook_info["path"],
             "ebook_format": ebook_info["format"].value,
             "ebook_size": ebook_info["size"],
             "audiobook_path": audio_info.get("audiobook_path") or audio_info["path"],
             "audiobook_format": audio_info.get("audiobook_format") or audio_info["format"].value,
             "audio_files": audio_info.get("audio_files") or [audio_info["path"]],
+            "audio_file_stats": audio_info.get("audio_file_stats"),
             "group_path": group_path,
         }
-
-    # Get existing books
-    result = await db.execute(
-        select(Book).where(Book.library_id == library_id)
-    )
-    existing_book_list = list(result.scalars().all())
-    existing_books = {b.file_hash: b for b in existing_book_list if b.file_hash}
-    existing_books_by_path = {b.file_path: b for b in existing_book_list}
-    existing_by_group_path: dict[str, Book] = {}
-    for b in existing_book_list:
-        meta = b.extra_metadata or {}
-        g = meta.get("group_path") or meta.get("book_folder_path")
-        if g:
-            existing_by_group_path[g] = b
-    matched_existing_ids = set()
 
     new_count = 0
     updated_count = 0
@@ -204,7 +315,7 @@ async def scan_library(
                 or bool(meta.get("ebook_path")) != bool(info.get("ebook_path"))
             )
             if needs_update:
-                metadata = await parse_book_file(info["path"], info["format"], str(base_path), info.get("audio_files"))
+                metadata = await parse_book_file(info["path"], info["format"], str(base_path), info.get("audio_files"), file_hash=info.get("single_file_hash"))
                 apply_media_variant_metadata(metadata, info)
                 metadata["file_hash"] = file_hash
                 metadata["file_size"] = info["size"]
@@ -216,7 +327,7 @@ async def scan_library(
         elif info["path"] in existing_books_by_path:
             existing = existing_books_by_path[info["path"]]
             matched_existing_ids.add(existing.id)
-            metadata = await parse_book_file(info["path"], info["format"], str(base_path), info.get("audio_files"))
+            metadata = await parse_book_file(info["path"], info["format"], str(base_path), info.get("audio_files"), file_hash=info.get("single_file_hash"))
             apply_media_variant_metadata(metadata, info)
             metadata["file_hash"] = file_hash
             metadata["file_size"] = info["size"]
@@ -231,7 +342,7 @@ async def scan_library(
             # file_hash nor file_path matches, but group_path is stable.
             existing = existing_by_group_path[info["group_path"]]
             matched_existing_ids.add(existing.id)
-            metadata = await parse_book_file(info["path"], info["format"], str(base_path), info.get("audio_files"))
+            metadata = await parse_book_file(info["path"], info["format"], str(base_path), info.get("audio_files"), file_hash=info.get("single_file_hash"))
             apply_media_variant_metadata(metadata, info)
             metadata["file_hash"] = file_hash
             metadata["file_size"] = info["size"]
@@ -241,7 +352,7 @@ async def scan_library(
             updated_ids.append(existing.id)
             updated_count += 1
         else:
-            metadata = await parse_book_file(info["path"], info["format"], str(base_path), info.get("audio_files"))
+            metadata = await parse_book_file(info["path"], info["format"], str(base_path), info.get("audio_files"), file_hash=info.get("single_file_hash"))
             apply_media_variant_metadata(metadata, info)
             metadata["file_hash"] = file_hash
             metadata["file_size"] = info["size"]
@@ -265,14 +376,18 @@ async def scan_library(
                 logger.info("[bold yellow][SCANNER][/] enrichment: book=%s got asin=%s — second pass for chapter data", book.id, book.asin)
                 await enrich_book_metadata(db, book)
 
-    # Remove books that no longer have files
-    for file_hash, book in existing_books.items():
+    # Remove books that no longer have files. Iterate ALL existing books
+    # (not just those with a file_hash) so rows with a NULL hash can never
+    # linger as orphans after their files vanish.
+    found_hashes = set(found_files)
+    for book in existing_book_list:
         if book.id in matched_existing_ids:
             continue
-        if file_hash not in found_files:
-            await remove_book_from_db(db, book.id)
-            await asyncio.to_thread(remove_book_from_meili, meili, book.id)
-            removed_count += 1
+        if book.file_hash in found_hashes:
+            continue
+        await remove_book_from_db(db, book.id)
+        await asyncio.to_thread(remove_book_from_meili, meili, book.id)
+        removed_count += 1
 
     logger.info("[bold green][SCANNER][/] scan complete new=%s updated=%s removed=%s", new_count, updated_count, removed_count)
     return {
@@ -284,10 +399,20 @@ async def scan_library(
     }
 
 
-def audio_sort_key(file_info: dict) -> tuple[int, str]:
+def _natural_key(value: str) -> tuple:
+    """Split digit runs so 'Dune-10' sorts after 'Dune-2' on tie-break."""
+    import re as _re
+
+    return tuple(
+        int(chunk) if chunk.isdigit() else chunk
+        for chunk in _re.split(r"(\d+)", value.lower())
+    )
+
+
+def audio_sort_key(file_info: dict) -> tuple[int, tuple]:
     metadata = file_info.get("metadata") or {}
     index = metadata.get("folder_chapter_index")
-    return (index if index is not None else 999999, file_info["path"].lower())
+    return (index if index is not None else 999999, _natural_key(file_info["path"]))
 
 
 def preferred_ebook_entry(entries: list[tuple[str, dict]]) -> tuple[str, dict]:
@@ -298,7 +423,7 @@ def preferred_ebook_entry(entries: list[tuple[str, dict]]) -> tuple[str, dict]:
         BookFormat.cbz: 3,
         BookFormat.cbr: 4,
     }
-    return sorted(entries, key=lambda item: (priority.get(item[1]["format"], 999), item[1]["path"].lower()))[0]
+    return sorted(entries, key=lambda item: (priority.get(item[1]["format"], 999), _natural_key(item[1]["path"])))[0]
 
 
 def combined_media_hash(ebook_hash: str, audio_hash: str) -> str:
@@ -319,21 +444,36 @@ def apply_media_variant_metadata(metadata: dict, info: dict) -> None:
         "audiobook_path",
         "audiobook_format",
         "audio_files",
+        "audio_file_stats",
         "group_path",
+        "file_mtime_ns",
     ):
         if info.get(key):
             metadata[key] = info[key]
 
 
 async def grouped_file_hash(files: list[dict]) -> str:
-    sha256 = hashlib.sha256()
+    parts = []
     for file_info in files:
         path = file_info["path"]
+        parts.append((path, str(file_info["size"]), await get_file_hash(path)))
+    return grouped_file_hash_from_parts(parts)
+
+
+def grouped_file_hash_from_parts(parts: list[tuple[str, str, str]]) -> str:
+    """Combine per-track (path, size, content-hash) parts into a group hash.
+
+    Pure function of its inputs — identical output to hashing each file
+    first — so callers can reuse previously stored per-track hashes and
+    skip re-reading unchanged files entirely.
+    """
+    sha256 = hashlib.sha256()
+    for path, size, content_hash in parts:
         sha256.update(path.encode("utf-8"))
         sha256.update(b"\0")
-        sha256.update(str(file_info["size"]).encode("ascii"))
+        sha256.update(str(size).encode("ascii"))
         sha256.update(b"\0")
-        sha256.update((await get_file_hash(path)).encode("ascii"))
+        sha256.update(content_hash.encode("ascii"))
         sha256.update(b"\0")
     return sha256.hexdigest()
 
@@ -343,10 +483,13 @@ async def parse_book_file(
     fmt: BookFormat,
     library_path: str | None = None,
     audio_files: list[str] | None = None,
+    file_hash: str | None = None,
+    dir_cache: dict | None = None,
 ) -> dict:
-    metadata = parse_filename(file_path, library_path)
-    file_hash = await get_file_hash(file_path)
-    metadata["file_hash"] = file_hash
+    if dir_cache is None:
+        dir_cache = {}
+    metadata = parse_filename(file_path, library_path, dir_cache)
+    metadata["file_hash"] = file_hash if file_hash is not None else await get_file_hash(file_path)
     metadata["file_size"] = os.path.getsize(file_path)
 
     try:
@@ -372,7 +515,7 @@ async def parse_book_file(
         metadata["chapters"] = []
         position = 0.0
         for index, audio_file in enumerate(audio_files, start=1):
-            chapter_metadata = parse_filename(audio_file, library_path)
+            chapter_metadata = parse_filename(audio_file, library_path, dir_cache)
             parsed_audio = parse_audio(audio_file)
             duration = parsed_audio.get("duration") or 0
             # Fallback to ffprobe when mutagen cannot determine duration
@@ -388,10 +531,19 @@ async def parse_book_file(
                 except Exception:
                     pass
             metadata["duration"] += duration
+            # Prefer the embedded track title (e.g. MP3 TIT2 "Dune Messiah
+            # 01a") over the raw filename so multi-track chapter lists stay
+            # human-readable. Fall back to the folder-derived title, then
+            # the file stem.
+            track_title = (
+                (parsed_audio.get("title") or "").strip()
+                or chapter_metadata.get("folder_chapter_title")
+                or Path(audio_file).stem
+            )
             metadata["chapters"].append(
                 {
                     "index": index,
-                    "title": chapter_metadata.get("folder_chapter_title") or Path(audio_file).stem,
+                    "title": track_title,
                     "start_position": position,
                     "end_position": position + duration,
                 }
@@ -427,6 +579,7 @@ def build_extra_metadata(metadata: dict) -> dict | None:
     extra = dict(metadata.get("metadata") or {})
     for key in (
         "audio_files",
+        "audio_file_stats",
         "audio_health",
         "book_folder_path",
         "ebook_path",
@@ -434,6 +587,7 @@ def build_extra_metadata(metadata: dict) -> dict | None:
         "ebook_size",
         "audiobook_path",
         "audiobook_format",
+        "file_mtime_ns",
         "group_path",
     ):
         if metadata.get(key):
@@ -516,7 +670,10 @@ async def update_book_in_db(
     for key in ("title", "author", "series", "series_index", "isbn", "asin",
                   "description", "publisher", "published_date", "language",
                   "page_count", "duration", "file_path", "file_size", "file_hash"):
-        if key in metadata:
+        if key in metadata and metadata[key] not in (None, ""):
+            # Scanner parse always carries series/series_index keys (None when
+            # the folder gate finds no series). Never let a rescan wipe a
+            # provider-enriched or gated-folder series back to NULL.
             setattr(book, key, metadata[key])
     if any(
         key in metadata

@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -11,6 +11,11 @@ from app.config import settings
 from app.models.library import Library
 from app.models.user import User
 from app.schemas.library import LibraryCreate
+
+
+def library_access_condition(user_id: UUID):
+    """Admin-owned libraries are shared with every authenticated user."""
+    return or_(Library.user_id == user_id, Library.user.has(User.is_admin.is_(True)))
 
 
 def normalize_library_path(path: str) -> str:
@@ -94,7 +99,7 @@ async def get_libraries(db: AsyncSession, user: User) -> list[Library]:
     result = await db.execute(
         select(Library)
         .options(selectinload(Library.books))
-        .where(Library.user_id == user.id)
+        .where(library_access_condition(user.id))
         .order_by(Library.name)
     )
     return list(result.scalars().all())
@@ -102,7 +107,7 @@ async def get_libraries(db: AsyncSession, user: User) -> list[Library]:
 
 async def get_library(db: AsyncSession, library_id: UUID, user: User) -> Library | None:
     result = await db.execute(
-        select(Library).where(Library.id == library_id, Library.user_id == user.id)
+        select(Library).where(Library.id == library_id, library_access_condition(user.id))
         .options(selectinload(Library.books))
     )
     return result.scalar_one_or_none()

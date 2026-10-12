@@ -12,7 +12,7 @@ from app.models.user import User
 async def test_book_stats_empty_library(client, test_library):
     response = await client.get('/books/stats')
     assert response.status_code == 200
-    assert response.json() == {'total': 0, 'in_progress': 0, 'completed': 0, 'not_started': 0}
+    assert response.json() == {'total': 0, 'in_progress': 0, 'completed': 0, 'not_started': 0, 'minutes_listened': 0}
 
 
 @pytest.mark.asyncio
@@ -37,4 +37,27 @@ async def test_book_stats_use_current_users_library_and_progress(client, db_sess
     await db_session.commit()
     response = await client.get('/books/stats')
     assert response.status_code == 200
-    assert response.json() == {'total': 6, 'in_progress': 1, 'completed': 2, 'not_started': 3}
+    assert response.json() == {'total': 6, 'in_progress': 1, 'completed': 2, 'not_started': 3, 'minutes_listened': 0}
+
+
+@pytest.mark.asyncio
+async def test_listening_minutes_use_audio_positions_and_exclude_other_users(client, db_session, test_user, test_library):
+    other = User(id=uuid.uuid4(), username='listener-other', email='listener@example.com', is_admin=False)
+    db_session.add(other)
+    books = [Book(id=uuid.uuid4(), library_id=test_library.id, title=f'Audio {i}',
+                  file_path=f'/tmp/audio-stats-{i}', file_format=fmt, file_size=1, duration=180)
+             for i, fmt in enumerate([BookFormat.m4b, BookFormat.mp3, BookFormat.epub, BookFormat.m4b])]
+    db_session.add_all(books)
+    await db_session.flush()
+    db_session.add_all([
+        ReadingProgress(user_id=test_user.id, book_id=books[0].id, progress=0.5, position=90, completed=True),
+        ReadingProgress(user_id=test_user.id, book_id=books[1].id, progress=1, position=200),
+        ReadingProgress(user_id=test_user.id, book_id=books[2].id, progress=0.5, position=1000),
+        ReadingProgress(user_id=other.id, book_id=books[3].id, progress=1, position=180),
+    ])
+    await db_session.commit()
+    response = await client.get('/books/stats')
+    assert response.status_code == 200
+    # 90 + 180 seconds: cap at duration, preserve manual completion position,
+    # exclude ebook positions and other users, then floor total minutes.
+    assert response.json()['minutes_listened'] == 4

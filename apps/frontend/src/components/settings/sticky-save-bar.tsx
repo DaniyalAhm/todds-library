@@ -9,9 +9,10 @@ interface StickySaveBarProps {
   saving: boolean;
   onSave: () => void;
   onReset: () => void;
+  error?: string | null;
 }
 
-export function StickySaveBar({ dirty, saving, onSave, onReset }: StickySaveBarProps) {
+export function StickySaveBar({ dirty, saving, onSave, onReset, error }: StickySaveBarProps) {
   return (
     <div className="sticky bottom-4 z-10">
       <div
@@ -31,6 +32,11 @@ export function StickySaveBar({ dirty, saving, onSave, onReset }: StickySaveBarP
           <span className="text-muted-foreground">
             {dirty ? 'You have unsaved changes' : 'All changes saved'}
           </span>
+          {error ? (
+            <span role="alert" className="text-sm text-destructive">
+              {error}
+            </span>
+          ) : null}
         </div>
         <div className="flex items-center gap-2">
           <Button variant="outline" size="sm" onClick={onReset} disabled={!dirty || saving}>

@@ -16,6 +16,22 @@ from app.config import settings
 
 
 logger = logging.getLogger(__name__)
+
+
+def _is_cuda_oom(exc: BaseException) -> bool:
+    """Detect CUDA/VRAM exhaustion across torch, ctranslate2, and faster-whisper errors."""
+    name = exc.__class__.__name__.lower()
+    text = f"{name} {exc}".lower()
+    markers = (
+        "out of memory",
+        "cuda oom",
+        "cublas",
+        "cudnn",
+        "alloc",
+        "memory allocation",
+        "no available memory",
+    )
+    return any(marker in text for marker in markers)
 ASR_MODELS_DIR = Path(settings.asr_models_dir)
 LONG_SOURCE_CHUNK_SECONDS = 30 * 60
 _MODEL_ALIASES = {
@@ -422,7 +438,7 @@ def _transcribe_source(
         vad_filter=vad_filter,
     )
 
-    if batch_size > 1 and vad_filter:
+    if batch_size > 1:
         try:
             from faster_whisper import BatchedInferencePipeline
         except ImportError:
@@ -441,7 +457,16 @@ def _transcribe_source(
         chunk_length_s,
         vad_filter,
     )
-    segments_iter, info = transcribe_model.transcribe(audio_path, **transcribe_kwargs)
+    try:
+        segments_iter, info = transcribe_model.transcribe(audio_path, **transcribe_kwargs)
+    except Exception as exc:
+        if _is_cuda_oom(exc):
+            raise ASRError(
+                f"CUDA out of memory with batch_size={batch_size}. "
+                "Lower Batch Size in Admin → Settings → Performance (e.g. 16 → 8 → 4 → 1) "
+                "and re-run generation."
+            ) from exc
+        raise
     segments = [_segment_to_dict(segment) for segment in segments_iter]
     text = "".join(segment["text"] for segment in segments).strip()
     detected_language = getattr(info, "language", None) or language or "en"

@@ -88,3 +88,4 @@ class BookStats(BaseModel):
     in_progress: int
     completed: int
     not_started: int
+    minutes_listened: int

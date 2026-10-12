@@ -622,8 +622,14 @@ export function PlayerHost({ children }: { children?: React.ReactNode }) {
 
   useEffect(() => {
     const audio = audioRef.current;
-    if (audio) audio.playbackRate = speed;
-  }, [speed]);
+    if (audio) {
+      // Re-applied on audioSrc change because setting src / calling
+      // load() (direct playback, track switches, reconnects — the
+      // dominant Android path) resets playbackRate to 1.0.
+      audio.playbackRate = speed;
+      audio.defaultPlaybackRate = speed;
+    }
+  }, [speed, audioSrc]);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -840,6 +846,11 @@ export function PlayerHost({ children }: { children?: React.ReactNode }) {
   const handleLoadedMetadata = useCallback(
     (e: React.SyntheticEvent<HTMLAudioElement>) => {
       const audio = e.currentTarget;
+      // load() resets playbackRate to 1.0 — restore the user's selected
+      // speed once metadata is available (reliable on Android Chrome).
+      const currentSpeed = usePlayer.getState().speed;
+      audio.playbackRate = currentSpeed;
+      audio.defaultPlaybackRate = currentSpeed;
       if (!isMultiTrackDirect) setDuration(audio.duration || 0);
       if (seekAfterTrackLoadRef.current !== null) {
         audio.currentTime = seekAfterTrackLoadRef.current;

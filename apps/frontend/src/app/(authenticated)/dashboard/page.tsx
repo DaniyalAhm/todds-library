@@ -3,7 +3,7 @@
 import { useBooks, useBookStats } from '@/hooks/use-books';
 import { BookGrid } from '@/components/books/book-grid';
 import { useSession } from 'next-auth/react';
-import { Library, BookOpen, CheckCircle2, Bookmark } from 'lucide-react';
+import { Library, BookOpen, CheckCircle2, Bookmark, Headphones } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 
@@ -16,6 +16,7 @@ export default function DashboardPage() {
     { label: 'In progress', value: stats?.in_progress, icon: BookOpen },
     { label: 'Completed', value: stats?.completed, icon: CheckCircle2 },
     { label: 'Not started', value: stats?.not_started, icon: Bookmark },
+    { label: 'Minutes listened', value: stats?.minutes_listened, icon: Headphones },
   ];
   const { data: inProgressBooks, isLoading: loadingProgress, error: progressError } = useBooks({
     limit: 12,
@@ -46,7 +47,7 @@ export default function DashboardPage() {
           </p>
         ) : (
           <>
-            <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
+            <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-5">
               {statCards.map(({ label, value, icon: Icon }) => (
                 <Card key={label} className="p-4 sm:p-6">
                   <div className="mb-3 flex items-center justify-between gap-2">
@@ -59,6 +60,7 @@ export default function DashboardPage() {
                 </Card>
               ))}
             </div>
+            <p className="text-xs text-muted-foreground">Minutes listened is estimated from saved audiobook positions; skips and replays are not tracked. Books with ebook reading positions are excluded.</p>
             {stats && (
               <Card className="p-4 sm:p-6">
                 <div className="mb-3 flex items-center justify-between gap-4 text-sm">

@@ -2,6 +2,7 @@
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api-client';
+import { toast } from '@/components/ui/toast';
 
 interface SystemSettings {
   settings: {
@@ -44,6 +45,17 @@ export function useUpdateSystemSettings() {
       api.put<SystemSettings>('/settings', settings),
     onSuccess: (data) => {
       queryClient.setQueryData(['system-settings'], data);
+    },
+    onError: (error) => {
+      const message =
+        typeof error === 'object' && error !== null && 'message' in error
+          ? String((error as { message?: unknown }).message)
+          : 'Please check the values and try again.';
+      toast({
+        title: 'Could not save settings',
+        description: message,
+        variant: 'destructive',
+      });
     },
   });
 }

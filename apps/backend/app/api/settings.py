@@ -144,11 +144,11 @@ async def update_settings(
             )
         if key == "batch_size":
             try:
-                v = int(value)
-                if v < 1 or v > 16:
+                v = int(str(value).strip())
+                if v < 1 or v > 32:
                     raise ValueError
             except ValueError:
-                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="batch_size must be an integer 1-16")
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"batch_size must be an integer 1-32 (got {value!r})")
         if key == "chunk_length_s":
             try:
                 v = int(value)
@@ -298,6 +298,9 @@ def _generation_error_message(exc: BaseException, prefix: str | None = None) -> 
     message = f"{exc.__class__.__name__}: {detail}"
     if prefix:
         message = f"{prefix}: {message}"
+    lowered = message.lower()
+    if any(marker in lowered for marker in ("out of memory", "cuda oom", "cublas", "memory allocation")):
+        message += " — CUDA out of memory. Lower Batch Size in Admin → Settings → Performance and re-run."
     return message[:MAX_LOG_MESSAGE_LENGTH]
 
 

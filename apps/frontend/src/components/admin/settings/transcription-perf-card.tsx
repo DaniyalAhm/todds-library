@@ -23,8 +23,8 @@ export function TranscriptionPerfCard({ batchSize, chunkLengthS, vadFilter, onCh
         <CardDescription>Throughput and memory tradeoffs for transcription.</CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
-        <SettingField label="Batch Size" description="Chunks processed in parallel. Higher values use more VRAM. (1–16)">
-          <Input type="number" min={1} max={16} value={batchSize} onChange={(e) => onChange('batch_size', e.target.value)} />
+        <SettingField label="Batch Size" description="Chunks processed in parallel. Higher values are faster but use more VRAM — lower it if generation fails with CUDA out of memory. (1–32)">
+          <Input type="number" min={1} max={32} step={1} value={batchSize} onChange={(e) => onChange('batch_size', e.target.value)} />
         </SettingField>
         <SettingField label="Chunk Length (seconds)" description="Audio segment length per inference. Longer chunks reduce overhead but use more memory. (10–120)">
           <Input type="number" min={10} max={120} step={5} value={chunkLengthS} onChange={(e) => onChange('chunk_length_s', e.target.value)} />

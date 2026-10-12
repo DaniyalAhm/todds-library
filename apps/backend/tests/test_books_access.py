@@ -25,7 +25,7 @@ async def create_user_library_book(
         id=uuid.uuid4(),
         username=username,
         email=f"{username}@example.com",
-        is_admin=True,
+        is_admin=False,
     )
     db_session.add(user)
     await db_session.commit()

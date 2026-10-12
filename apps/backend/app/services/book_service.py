@@ -11,7 +11,7 @@ from sqlalchemy import and_, case, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models.book import Book
+from app.models.book import Book, AUDIOBOOK_FORMAT_VALUES
 from app.models.bookmark import Bookmark
 from app.models.chapter import Chapter
 from app.models.generated_audio import GeneratedAudio
@@ -21,10 +21,11 @@ from app.models.metadata_cache import MetadataCache
 from app.models.progress import ReadingProgress
 from app.models.subtitle import SubtitleMetadata
 from app.schemas.bookmark import BookmarkCreate
+from app.services.library_service import library_access_condition
 
 
 def _user_library_condition(user_id: UUID):
-    return Book.library.has(Library.user_id == user_id)
+    return Book.library.has(library_access_condition(user_id))
 
 
 async def get_books(
@@ -98,16 +99,26 @@ async def get_books(
 async def get_book_stats(db: AsyncSession, user_id: UUID) -> dict[str, int]:
     completed = or_(ReadingProgress.completed.is_(True), ReadingProgress.progress >= 1)
     in_progress = and_(ReadingProgress.completed.is_(False), ReadingProgress.progress > 0, ReadingProgress.progress < 1)
+    # Playback positions are seconds for native audiobooks. Ebook positions
+    # (including mixed books) cannot safely be interpreted as listening time.
+    audio_seconds = case(
+        (ReadingProgress.position > 0, case(
+            (and_(Book.duration > 0, ReadingProgress.position > Book.duration), Book.duration),
+            else_=ReadingProgress.position,
+        )), else_=0,
+    )
     result = await db.execute(
         select(
             func.count(Book.id).label("total"),
             func.coalesce(func.sum(case((completed, 1), else_=0)), 0).label("completed"),
             func.coalesce(func.sum(case((in_progress, 1), else_=0)), 0).label("in_progress"),
+            func.coalesce(func.sum(case((Book.file_format.in_(AUDIOBOOK_FORMAT_VALUES), audio_seconds), else_=0)), 0).label("listened_seconds"),
         )
         .outerjoin(ReadingProgress, and_(ReadingProgress.book_id == Book.id, ReadingProgress.user_id == user_id))
         .where(_user_library_condition(user_id))
     )
     counts = dict(result.one()._mapping)
+    counts["minutes_listened"] = int(counts.pop("listened_seconds") / 60)
     counts["not_started"] = counts["total"] - counts["completed"] - counts["in_progress"]
     return counts
 

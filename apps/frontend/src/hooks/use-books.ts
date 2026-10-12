@@ -131,7 +131,7 @@ export function useBookStats() {
   const { data: session } = useSession();
   return useQuery({
     queryKey: ['books', 'stats', session?.accessToken],
-    queryFn: () => api.get<{ total: number; in_progress: number; completed: number; not_started: number }>(
+    queryFn: () => api.get<{ total: number; in_progress: number; completed: number; not_started: number; minutes_listened: number }>(
       '/books/stats', authConfig(session?.accessToken)
     ),
     enabled: !!session?.accessToken,

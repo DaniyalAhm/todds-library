@@ -127,6 +127,15 @@ export default function SettingsPage() {
             saving={updateSettings.isPending}
             onSave={handleSave}
             onReset={reset}
+            error={
+              updateSettings.isError
+                ? typeof updateSettings.error === 'object' &&
+                  updateSettings.error !== null &&
+                  'message' in updateSettings.error
+                  ? String((updateSettings.error as { message?: unknown }).message)
+                  : 'Could not save settings.'
+                : null
+            }
           />
 
           <section aria-label="Bulk jobs" className="space-y-4">

@@ -9,7 +9,7 @@ from sqlalchemy.orm import selectinload
 
 from app.config import settings
 from app.models.book import Book, BookFormat
-from app.models.library import Library
+from app.services.library_service import library_access_condition
 
 SEARCH_INDEX_NAME = "books"
 
@@ -108,7 +108,7 @@ async def fallback_search(
 ) -> list[Book]:
     stmt = select(Book).options(selectinload(Book.chapters))
     conditions = [
-        Book.library.has(Library.user_id == user_id),
+        Book.library.has(library_access_condition(user_id)),
         or_(
             Book.title.ilike(f"%{query}%"),
             Book.author.ilike(f"%{query}%"),

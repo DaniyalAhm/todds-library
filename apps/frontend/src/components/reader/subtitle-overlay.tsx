@@ -22,7 +22,6 @@ interface SubtitleOverlayProps {
   className?: string;
 }
 
-const WORD_HIGHLIGHT_GRACE_SECONDS = 0.12;
 const FULLSCREEN_TARGET_WORDS = 120;
 const FULLSCREEN_MAX_CUES = 18;
 const FULLSCREEN_PARAGRAPH_WORDS = 60;
@@ -34,11 +33,7 @@ export function SubtitleOverlay({
   mode = 'overlay',
   className,
 }: SubtitleOverlayProps) {
-  const activeCues = cues.filter(
-    (c) =>
-      currentTime >= c.start - WORD_HIGHLIGHT_GRACE_SECONDS &&
-      currentTime <= c.end + WORD_HIGHLIGHT_GRACE_SECONDS
-  );
+  const activeCues = cues.filter((cue) => isCueActive(cue, currentTime));
 
   if (mode === 'fullscreen') {
     const fullscreenPageTime = currentTime;
@@ -68,7 +63,7 @@ export function SubtitleOverlay({
                   <SubtitleCueText
                     cue={cue}
                     currentTime={currentTime}
-                    activeClassName="rounded bg-white px-1 text-black shadow-sm box-decoration-clone"
+                    activeClassName="rounded bg-white text-black shadow-sm box-decoration-clone"
                     cueActiveClassName="text-white"
                   />
                   {cueIndex < paragraph.length - 1 ? ' ' : ''}
@@ -81,17 +76,19 @@ export function SubtitleOverlay({
     );
   }
 
-  if (activeCues.length === 0) return null;
-
   if (mode === 'panel') {
+    const previousCueIndex = findLastIndex(cues, (cue) => cue.start <= currentTime);
+    const panelCues = activeCues.length > 0
+      ? activeCues
+      : previousCueIndex >= 0 ? [cues[previousCueIndex]] : [];
     return (
       <div
         className={cn(
-          'rounded-md border border-border bg-card px-4 py-3 text-center shadow-sm',
+          'min-h-[3.5rem] rounded-md border border-border bg-card px-4 py-3 text-center shadow-sm',
           className
         )}
       >
-        {activeCues.map((cue, idx) => (
+        {panelCues.map((cue, idx) => (
           <SubtitleLine
             key={`${cue.start}-${idx}`}
             cue={cue}
@@ -103,6 +100,8 @@ export function SubtitleOverlay({
       </div>
     );
   }
+
+  if (activeCues.length === 0) return null;
 
   return (
     <div
@@ -166,19 +165,17 @@ function SubtitleCueText({
     start: cue.start + (cue.end - cue.start) * index / tokens.length,
     end: cue.start + (cue.end - cue.start) * (index + 1) / tokens.length,
   }));
-  const isCueActive =
-    currentTime >= cue.start - WORD_HIGHLIGHT_GRACE_SECONDS &&
-    currentTime <= cue.end + WORD_HIGHLIGHT_GRACE_SECONDS;
+  const cueIsActive = isCueActive(cue, currentTime);
 
   if (!words || words.length === 0) {
     return (
-      <span className={cn(isCueActive && cueActiveClassName)} data-subtitle-cue-active={isCueActive ? 'true' : undefined}>
+      <span className={cn(cueIsActive && cueActiveClassName)} data-subtitle-cue-active={cueIsActive ? 'true' : undefined}>
         {cue.text}
       </span>
     );
   }
 
-  const activeWordIndex = isCueActive ? getActiveWordIndex(cue, words, currentTime) : -1;
+  const activeWordIndex = cueIsActive ? getActiveWordIndex(cue, words, currentTime) : -1;
 
   return (
     <>
@@ -187,7 +184,7 @@ function SubtitleCueText({
         return (
           <span
             key={`${word.start}-${idx}`}
-            className={cn('transition-colors px-0.5', isActive && activeClassName)}
+            className={cn('px-0.5', isActive && activeClassName)}
             data-subtitle-word-active={isActive ? 'true' : undefined}
           >
             {word.text}
@@ -252,11 +249,10 @@ function getFullscreenPages(cues: SubtitleCue[]): SubtitleCue[][] {
   return pages;
 }
 
-function isCueActive(cue: SubtitleCue, currentTime: number, startGraceSeconds = WORD_HIGHLIGHT_GRACE_SECONDS): boolean {
-  return (
-    currentTime >= cue.start - startGraceSeconds &&
-    currentTime <= cue.end + WORD_HIGHLIGHT_GRACE_SECONDS
-  );
+function isCueActive(cue: SubtitleCue, currentTime: number): boolean {
+  // Half-open intervals switch once at a shared boundary without flashing
+  // both cues or changing the panel's height for a single animation frame.
+  return currentTime >= cue.start && currentTime < cue.end;
 }
 
 function groupFullscreenParagraphs(cues: SubtitleCue[]): SubtitleCue[][] {
@@ -300,21 +296,19 @@ function countCueWords(cues: SubtitleCue[]): number {
 function getActiveWordIndex(cue: SubtitleCue, words: SubtitleWord[], currentTime: number): number {
   const exactIndex = words.findIndex(
     (word) =>
-      currentTime >= word.start - WORD_HIGHLIGHT_GRACE_SECONDS &&
-      currentTime <= word.end + WORD_HIGHLIGHT_GRACE_SECONDS
+      currentTime >= word.start && currentTime < word.end
   );
   if (exactIndex >= 0) return exactIndex;
 
   if (
-    currentTime < cue.start - WORD_HIGHLIGHT_GRACE_SECONDS ||
-    currentTime > cue.end + WORD_HIGHLIGHT_GRACE_SECONDS
+    currentTime < cue.start || currentTime >= cue.end
   ) {
     return -1;
   }
 
   const previousIndex = findLastIndex(
     words,
-    (word) => currentTime >= word.start - WORD_HIGHLIGHT_GRACE_SECONDS
+    (word) => currentTime >= word.start
   );
   if (previousIndex >= 0) return previousIndex;
 

@@ -11,6 +11,33 @@ const cues = [
 ];
 
 describe('subtitle read-along', () => {
+  it('keeps the panel visible in timing gaps without highlighting unspoken words', () => {
+    const spacedCues = [cues[0], { ...cues[1], start: 5, end: 7 }];
+    const { container, rerender } = render(<SubtitleOverlay currentTime={1.5} cues={spacedCues} mode="panel" />);
+    const panel = container.firstElementChild;
+    rerender(<SubtitleOverlay currentTime={3} cues={spacedCues} mode="panel" />);
+    expect(container.firstElementChild).toBe(panel);
+    expect(container.textContent).toBe('Hello world');
+    expect(container.querySelector('[data-subtitle-word-active="true"]')).toBeNull();
+    rerender(<SubtitleOverlay currentTime={5} cues={spacedCues} mode="panel" />);
+    expect(container.textContent).toBe('Next sentence');
+    expect(container.querySelector('[data-subtitle-word-active="true"]')?.textContent?.trim()).toBe('Next');
+    rerender(<SubtitleOverlay currentTime={-1} cues={spacedCues} mode="panel" />);
+    expect(container.firstElementChild).toBe(panel);
+    expect(container.textContent).toBe('');
+  });
+
+  it('switches cues and words once at their exact playback boundary', () => {
+    const { container, rerender } = render(<SubtitleOverlay currentTime={1.99} cues={cues} mode="panel" />);
+    expect(container.querySelectorAll('p')).toHaveLength(1);
+    expect(container.textContent).toBe('Hello world');
+    rerender(<SubtitleOverlay currentTime={2} cues={cues} mode="panel" />);
+    expect(container.querySelectorAll('p')).toHaveLength(1);
+    expect(container.textContent).toBe('Next sentence');
+    rerender(<SubtitleOverlay currentTime={1} cues={cues} mode="panel" />);
+    expect(container.querySelector('[data-subtitle-word-active="true"]')?.textContent?.trim()).toBe('world');
+  });
+
   it.each(['panel', 'overlay', 'fullscreen'] as const)('highlights the spoken word in %s mode', (mode) => {
     const { container } = render(<SubtitleOverlay currentTime={1.5} cues={cues} mode={mode} />);
     expect(container.querySelector('[data-subtitle-word-active="true"]')?.textContent?.trim()).toBe('world');
@@ -29,6 +56,19 @@ describe('subtitle read-along', () => {
     }));
     const { container } = render(<SubtitleOverlay currentTime={35.5} cues={pageCues} mode="fullscreen" />);
     expect(container.querySelector('[data-subtitle-word-active="true"]')?.textContent?.trim()).toBe('word17');
+  });
+
+  it('switches fullscreen pages at the boundary and follows backward seeks', () => {
+    const pageCues = Array.from({ length: 19 }, (_, index) => ({
+      start: index * 2, end: index * 2 + 2, text: `word${index}`,
+    }));
+    const { container, rerender } = render(<SubtitleOverlay currentTime={35.99} cues={pageCues} mode="fullscreen" />);
+    expect(container.querySelector('[data-subtitle-word-active="true"]')?.textContent?.trim()).toBe('word17');
+    rerender(<SubtitleOverlay currentTime={36} cues={pageCues} mode="fullscreen" />);
+    expect(container.textContent).toBe('word18');
+    expect(container.querySelector('[data-subtitle-word-active="true"]')?.textContent?.trim()).toBe('word18');
+    rerender(<SubtitleOverlay currentTime={1} cues={pageCues} mode="fullscreen" />);
+    expect(container.querySelector('[data-subtitle-word-active="true"]')?.textContent?.trim()).toBe('word0');
   });
 });
 

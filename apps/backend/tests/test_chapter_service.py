@@ -315,3 +315,22 @@ async def test_apply_chapters_to_book_keeps_existing_duration(db_session, test_l
     )
 
     assert book.duration == 3600.0
+
+
+@pytest.mark.asyncio
+async def test_book_chapters_are_loaded_in_playback_order(db_session, test_library) -> None:
+    from app.services.book_service import get_book
+
+    book = Book(
+        id=uuid.uuid4(), library_id=test_library.id, title="Ordered audio",
+        file_path="/tmp/ordered.m4b", file_format=BookFormat.m4b,
+    )
+    db_session.add(book)
+    await db_session.flush()
+    db_session.add_all([
+        Chapter(book_id=book.id, index=2, title="Second", start_position=100, end_position=200),
+        Chapter(book_id=book.id, index=1, title="First", start_position=0, end_position=100),
+    ])
+    await db_session.commit()
+    loaded = await get_book(db_session, book.id)
+    assert [chapter.index for chapter in loaded.chapters] == [1, 2]

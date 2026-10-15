@@ -91,12 +91,16 @@ export function AudiobookPlayer({ bookId }: AudiobookPlayerProps) {
 
   useEffect(() => {
     const currentChapter = chapters[chapterIndex];
+    let cancelled = false;
+    setCues([]);
     if (currentChapter?.id) {
-      setCues([]);
       loadSubtitleFile(bookId, currentChapter.id)
-        .then((loadedCues) => setCues(normalizeCuesToPlaybackTimeline(loadedCues, currentChapter, audio.isMultiTrackDirect)))
-        .catch(() => setCues([]));
+        .then((loadedCues) => {
+          if (!cancelled) setCues(normalizeCuesToPlaybackTimeline(loadedCues, currentChapter, audio.isMultiTrackDirect));
+        })
+        .catch(() => { if (!cancelled) setCues([]); });
     }
+    return () => { cancelled = true; };
   }, [chapterIndex, chapters, bookId, audio.isMultiTrackDirect]);
 
   useEffect(() => {
@@ -304,7 +308,7 @@ export function AudiobookPlayer({ bookId }: AudiobookPlayerProps) {
             )}
 
             {/* Custom transport — drives global PlayerHost */}
-            <div className="rounded-lg border border-border bg-card p-4 shadow-sm">
+            <div className="relative rounded-lg border border-border bg-card p-4 shadow-sm">
               <div className="flex items-center gap-2">
                 <span className="w-12 text-right text-xs tabular-nums text-muted-foreground">{formatDurationDetailed(currentTime)}</span>
                 <Slider

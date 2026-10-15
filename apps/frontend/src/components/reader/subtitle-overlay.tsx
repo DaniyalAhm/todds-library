@@ -23,7 +23,6 @@ interface SubtitleOverlayProps {
 }
 
 const WORD_HIGHLIGHT_GRACE_SECONDS = 0.12;
-const FULLSCREEN_PAGE_LEAD_SECONDS = 1;
 const FULLSCREEN_TARGET_WORDS = 120;
 const FULLSCREEN_MAX_CUES = 18;
 const FULLSCREEN_PARAGRAPH_WORDS = 60;
@@ -42,7 +41,7 @@ export function SubtitleOverlay({
   );
 
   if (mode === 'fullscreen') {
-    const fullscreenPageTime = currentTime + FULLSCREEN_PAGE_LEAD_SECONDS;
+    const fullscreenPageTime = currentTime;
     const page = getFullscreenPage(cues, fullscreenPageTime);
     const pageCues = page?.cues ?? [];
     if (pageCues.length === 0) return null;
@@ -159,7 +158,14 @@ function SubtitleCueText({
   activeClassName?: string;
   cueActiveClassName?: string;
 }) {
-  const words = cue.words?.filter((word) => word.text.trim());
+  // Cue-only files use approximate word timing for read-along highlighting.
+  const timedWords = cue.words?.filter((word) => word.text.trim());
+  const tokens = cue.text.trim().split(/\s+/).filter(Boolean);
+  const words = timedWords?.length ? timedWords : tokens.map((text, index) => ({
+    text,
+    start: cue.start + (cue.end - cue.start) * index / tokens.length,
+    end: cue.start + (cue.end - cue.start) * (index + 1) / tokens.length,
+  }));
   const isCueActive =
     currentTime >= cue.start - WORD_HIGHLIGHT_GRACE_SECONDS &&
     currentTime <= cue.end + WORD_HIGHLIGHT_GRACE_SECONDS;
@@ -381,7 +387,7 @@ function normalizeJsonSubtitles(data: unknown): SubtitleCue[] {
       ? data.cues
       : [];
 
-  return cues
+  const normalized = cues
     .map((cue): SubtitleCue | null => {
       if (typeof cue !== 'object' || cue === null) return null;
       const candidate = cue as Partial<SubtitleCue>;
@@ -403,6 +409,20 @@ function normalizeJsonSubtitles(data: unknown): SubtitleCue[] {
       };
     })
     .filter((cue): cue is SubtitleCue => cue !== null);
+
+  return normalized.map((cue, index) => {
+    const words = cue.words ?? [];
+    // Some ASR files collapse an entire paragraph onto its first word's
+    // timestamp. Those cues disappear while the paragraph is still spoken.
+    const collapsedWords = words.filter((word) => word.end <= word.start).length;
+    if (words.length < 4 || collapsedWords <= words.length / 2) return cue;
+    const nextStart = normalized[index + 1]?.start;
+    const end = nextStart !== undefined && nextStart > cue.end
+      ? nextStart
+      : Math.max(cue.end, cue.start + cue.text.trim().split(/\s+/).length / 2.5);
+    // Let the renderer estimate word timing instead of using corrupt stamps.
+    return { ...cue, end, words: undefined };
+  });
 }
 
 function isSubtitleWord(word: unknown): word is SubtitleWord {

@@ -84,7 +84,7 @@ export function PlayerHost({ children }: { children?: React.ReactNode }) {
   // Chapters + duration init from book
   useEffect(() => {
     if (book?.chapters) {
-      const chapterList = book.chapters.map((ch: any, idx: number) => ({
+      const chapterList = [...book.chapters].sort((a, b) => a.index - b.index).map((ch: any, idx: number) => ({
         id: ch.id || String(idx),
         title: ch.title || `Chapter ${idx + 1}`,
         start: ch.start_position || 0,
@@ -191,25 +191,34 @@ export function PlayerHost({ children }: { children?: React.ReactNode }) {
 
   // Hydrate progress
   useEffect(() => {
-    if (!bookId || !progress || hydratedProgressBookRef.current === bookId) return;
-    const position = progress.position || 0;
+    if (!bookId || book?.id !== bookId || !progressLoaded || hydratedProgressBookRef.current === bookId) return;
+    const orderedChapters = [...(book.chapters ?? [])].sort((a, b) => a.index - b.index);
+    if (orderedChapters.length !== chapters.length || orderedChapters.some((chapter, index) => chapter.id !== chapters[index]?.id)) return;
+    const position = progress?.position || 0;
     if (isMultiTrackDirect) {
       if (chapters.length === 0) return;
       const nextTrackIndex = trackForPosition(position);
       setTrackIndex(nextTrackIndex);
       setCurrentTime(position);
       seekAfterTrackLoadRef.current = Math.max(0, position - trackStart(nextTrackIndex));
+      // Metadata may have loaded before the progress request completed. If
+      // this track is already ready, there will be no second metadata event.
+      const audio = audioRef.current;
+      if (audio && audioSetupKeyRef.current?.startsWith(`${bookId}|direct|${nextTrackIndex}|`) && audio.readyState >= HTMLMediaElement.HAVE_METADATA) {
+        audio.currentTime = seekAfterTrackLoadRef.current;
+        seekAfterTrackLoadRef.current = null;
+      }
     } else {
       setCurrentTime(position);
       seekAfterTrackLoadRef.current = position;
       const audio = audioRef.current;
-      if (audio && audio.readyState >= HTMLMediaElement.HAVE_METADATA) {
+      if (audio && audioSetupKeyRef.current?.startsWith(`${bookId}|`) && audio.readyState >= HTMLMediaElement.HAVE_METADATA) {
         audio.currentTime = position;
         seekAfterTrackLoadRef.current = null;
       }
     }
     hydratedProgressBookRef.current = bookId;
-  }, [bookId, chapters.length, isMultiTrackDirect, progress, setCurrentTime, trackForPosition, trackStart]);
+  }, [bookId, book, chapters, isMultiTrackDirect, progress, progressLoaded, setCurrentTime, trackForPosition, trackStart]);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -405,11 +414,13 @@ export function PlayerHost({ children }: { children?: React.ReactNode }) {
   const getProgressSnapshot = useCallback((): ProgressSnapshot | null => {
     const audio = audioRef.current;
     if (!audio || !bookId || !progressLoaded) return null;
-    if (progress && (hydratedProgressBookRef.current !== bookId || seekAfterTrackLoadRef.current !== null)) return null;
+    if (seekAfterTrackLoadRef.current !== null || hydratedProgressBookRef.current !== bookId) return null;
+    if (book?.id !== bookId || audio.readyState < 1 || !Number.isFinite(audio.currentTime)) return null;
     const globalPosition = isMultiTrackDirect ? trackStart(trackIndex) + audio.currentTime : audio.currentTime;
-    const totalDuration = duration || audio.duration || 1;
+    const totalDuration = Number.isFinite(duration) && duration > 0 ? duration : audio.duration;
+    if (!Number.isFinite(totalDuration) || totalDuration <= 0) return null;
     return captureProgress({ bookId, progress: Math.min(1, Math.max(0, globalPosition / totalDuration)), position: Math.max(0, globalPosition) });
-  }, [bookId, duration, isMultiTrackDirect, trackIndex, trackStart, progressLoaded, progress]);
+  }, [bookId, duration, isMultiTrackDirect, trackIndex, trackStart, progressLoaded, progress, book?.id]);
 
   const saveProgress = useCallback(() => {
     const audio = audioRef.current;
@@ -507,7 +518,7 @@ export function PlayerHost({ children }: { children?: React.ReactNode }) {
   }, [book, reconnectStream, saveProgress]);
 
   const setupAudio = useCallback(async () => {
-    if (!book || !bookId) return;
+    if (!book || book.id !== bookId) return;
     const setupKey = [
       book.id,
       prefersDirectPlayback ? 'direct' : 'hls',
@@ -552,7 +563,10 @@ export function PlayerHost({ children }: { children?: React.ReactNode }) {
       setLoadError('');
       return;
     }
-    setupAudio();
+    void setupAudio();
+  }, [setupAudio, bookId]);
+
+  useEffect(() => {
     return () => {
       if (hlsRef.current) {
         hlsRef.current.destroy();
@@ -563,11 +577,11 @@ export function PlayerHost({ children }: { children?: React.ReactNode }) {
         hlsStallTimerRef.current = null;
       }
     };
-  }, [setupAudio, bookId]);
+  }, [bookId]);
 
   const syncCurrentTimeFromAudio = useCallback(() => {
     const audio = audioRef.current;
-    if (!audio) return;
+    if (!audio || seekAfterTrackLoadRef.current !== null || audio.readyState < 1) return;
     const globalTime = isMultiTrackDirect ? trackStart(trackIndex) + audio.currentTime : audio.currentTime;
     setCurrentTime(globalTime);
   }, [isMultiTrackDirect, setCurrentTime, trackIndex, trackStart]);
@@ -600,7 +614,7 @@ export function PlayerHost({ children }: { children?: React.ReactNode }) {
     }
     const tick = () => {
       const audio = audioRef.current;
-      if (audio && !audio.paused) {
+      if (audio && !audio.paused && seekAfterTrackLoadRef.current === null && audio.readyState >= 1) {
         const globalTime = isMultiTrackDirect ? trackStart(trackIndex) + audio.currentTime : audio.currentTime;
         setCurrentTime(globalTime);
       }
@@ -630,17 +644,6 @@ export function PlayerHost({ children }: { children?: React.ReactNode }) {
       audio.defaultPlaybackRate = speed;
     }
   }, [speed, audioSrc]);
-
-  useEffect(() => {
-    const audio = audioRef.current;
-    if (!audio || seekAfterTrackLoadRef.current === null) return;
-    // Only apply immediately if we have metadata; otherwise defer to onLoadedMetadata
-    if (audio.readyState >= 1) {
-      const nextTime = seekAfterTrackLoadRef.current;
-      seekAfterTrackLoadRef.current = null;
-      audio.currentTime = nextTime;
-    }
-  }, [audioSrc]);
 
   // chapter index sync
   useEffect(() => {
@@ -708,6 +711,7 @@ export function PlayerHost({ children }: { children?: React.ReactNode }) {
 
   const handleNativeAudioSeek = useCallback(
     (localTime: number) => {
+      if (seekAfterTrackLoadRef.current !== null) return;
       if (isMultiTrackDirect) seek(trackStart(trackIndex) + localTime);
       else seek(localTime);
     },

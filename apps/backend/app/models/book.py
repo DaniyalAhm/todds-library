@@ -67,7 +67,7 @@ class Book(Base):
     )
 
     library = relationship("Library", back_populates="books", lazy="selectin")
-    chapters = relationship("Chapter", back_populates="book", lazy="selectin", cascade="all, delete-orphan")
+    chapters = relationship("Chapter", order_by="Chapter.index", back_populates="book", lazy="selectin", cascade="all, delete-orphan")
     reading_progress = relationship("ReadingProgress", back_populates="book", lazy="selectin")
     bookmarks = relationship("Bookmark", back_populates="book", lazy="selectin")
     metadata_caches = relationship("MetadataCache", back_populates="book", lazy="selectin")
